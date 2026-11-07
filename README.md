@@ -178,6 +178,25 @@ nothing, or writes garbage, fails its contract and is stopped.
 | Silent spend | per-call, per-day and per-goal budgets, plus the owner queue |
 | Context lost between sessions | `tw status` writes `HANDOFF.md` |
 
+## Inside Claude Code
+
+`tw init` installs slash commands in `.claude/commands/`. Each one runs its
+`tw` command before the model reads anything, so the model sees only the
+result, and each runs on the cheapest model that fits:
+
+| Command | Does | Model |
+|---|---|---|
+| `/tw-status` | the project in at most 8 lines | Haiku |
+| `/tw-step [notes]` | build the current step, run its gate, fix up to twice | session model |
+| `/tw-check CHECK` | run one check | Haiku |
+| `/tw-brief JOB` | explain a finished job from its brief | Haiku |
+| `/tw-adopt [--no-model]` | plan from the codebase, summarize GAP.md | session model |
+| `/tw-mine` | top mined proposals, installs nothing | Sonnet |
+| `/tw-mine-apply ID` | install one proposal | Haiku |
+
+It also installs the subagents `tw-status` (Haiku), `tw-ops` (Sonnet) and
+`tw-builder` (Opus). Commands you have edited are never overwritten.
+
 ## Commands
 
 ```

@@ -23,7 +23,7 @@ tw = "tierwright.cli:main"
 include = ["tierwright*"]
 
 [tool.setuptools.package-data]
-tierwright = ["templates/*", "templates/roles/*", "templates/agents/*"]
+tierwright = ["templates/*", "templates/roles/*", "templates/agents/*", "templates/commands/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

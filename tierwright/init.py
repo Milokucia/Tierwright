@@ -108,6 +108,16 @@ def run(root: str, backend: str | None = None, per_day: float | None = None,
         if not dst.exists():
             dst.write_text(f.read_text())
             wrote.append(f".claude/agents/{f.name}")
+    cmds = p.root / ".claude" / "commands"
+    cmds.mkdir(parents=True, exist_ok=True)
+    added = []
+    for f in resources.files("tierwright").joinpath("templates/commands").iterdir():
+        dst = cmds / f.name
+        if not dst.exists():
+            dst.write_text(f.read_text())
+            added.append("/" + f.name.removesuffix(".md"))
+    if added:
+        wrote.append("slash commands " + " ".join(added))
     if _merge_settings(p.root / ".claude" / "settings.json"):
         wrote.append(".claude/settings.json (guard hooks)")
     cm = p.root / "CLAUDE.md"

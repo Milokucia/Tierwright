@@ -64,6 +64,20 @@ def test_init_files_and_idempotent_hooks(proj):
         init.run(str(proj.root), backend="api", probe=False, interactive=False)
 
 
+def test_init_installs_slash_commands(proj):
+    cmds = sorted(f.name for f in (proj.root / ".claude/commands").glob("tw-*.md"))
+    assert cmds == ["tw-adopt.md", "tw-brief.md", "tw-check.md", "tw-mine-apply.md", "tw-mine.md",
+                    "tw-status.md", "tw-step.md"]
+    for f in (proj.root / ".claude/commands").glob("tw-*.md"):
+        head = f.read_text().split("---")[1]
+        assert "description:" in head and "allowed-tools:" in head
+    assert "model: haiku" in (proj.root / ".claude/commands/tw-status.md").read_text()
+    # a user's edited command is never overwritten
+    (proj.root / ".claude/commands/tw-status.md").write_text("mine")
+    init.run(str(proj.root), backend="subscription", probe=False, interactive=False, force=True)
+    assert (proj.root / ".claude/commands/tw-status.md").read_text() == "mine"
+
+
 def test_init_appends_to_existing_claude_md(tmp_path):
     (tmp_path / "CLAUDE.md").write_text("# Mine\n\nkeep this\n")
     init.run(str(tmp_path), backend="both", probe=False, interactive=False)

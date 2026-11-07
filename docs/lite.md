@@ -57,8 +57,9 @@ tw spend                   # what each kind of task cost
 tw mine                    # after a week: turn what Claude repeats into one-call tools
 ```
 
-Tell Claude Code to "work on the current Tierwright step". The `CLAUDE.md`
-that `tw init` wrote tells it how.
+Inside Claude Code, type `/tw-status` to see where things stand, `/tw-step`
+to work on the current step, or `/tw-check words: out/post.md 300-500` to
+try a check.
 
 ## Keep your guide safe
 

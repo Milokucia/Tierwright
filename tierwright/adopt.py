@@ -44,7 +44,7 @@ MANIFESTS = ["pyproject.toml", "setup.py", "requirements.txt", "package.json", "
 MAX_FILES = 20000
 # Files Tierwright itself writes: never evidence about the user's codebase.
 GENERATED = ("tierwright.yaml", "goal.yaml", "GAP.md", "STATUS.md", "HANDOFF.md", "owner-queue.md",
-             ".claude/agents/tw-", "steps/0", "steps/1", "steps/2", "steps/3", "steps/4", "steps/5",
+             ".claude/agents/tw-", ".claude/commands/tw-", "steps/0", "steps/1", "steps/2", "steps/3", "steps/4", "steps/5",
              "steps/6", "steps/7", "steps/8", "steps/9")
 
 
