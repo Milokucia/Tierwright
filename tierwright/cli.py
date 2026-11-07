@@ -5,6 +5,7 @@
   tw plan                                         same as adopt (for a new, empty project)
   tw step show|list|check [ID]                    the ladder; check runs the open step's gate
   tw done                                         run the goal's done bar
+  tw check 'CHECK'                                run one check (file:, words:, contains:, lacks:, review:, run:)
   tw submit JOB [--name N]                        queue a job (needs an output contract)
   tw queue run [--watch] | stop NAME              run jobs; the dispatcher acts on each end
   tw dispatch                                     process unread events now
@@ -45,8 +46,8 @@ def cmd_init(a):
     from . import init
     r = init.run(".", a.backend, a.per_day, a.per_goal, a.goal, a.done or None,
                  probe=not a.no_probe, force=a.force,
-                 interactive=None if not a.yes else False)
-    print(f"tierwright initialized, backend {r['backend']}: " + ", ".join(r["wrote"]))
+                 interactive=None if not a.yes else False, lite=a.lite)
+    print(f"tierwright initialized ({r['mode']}), backend {r['backend']}: " + ", ".join(r["wrote"]))
     for b, v in r["probes"].items():
         print(f"probe {b}: {v}")
     if any(v != "ok" for v in r["probes"].values()):
@@ -98,9 +99,20 @@ def cmd_done(a):
     return 0 if r["pass"] else 1
 
 
+def cmd_check(a):
+    from . import checks
+    p = _p()
+    r = checks.run(p, a.check, _cfg(p))
+    print(f"{'ok  ' if r['rc'] == 0 else 'FAIL'} {r['cmd']}")
+    for t in r["tail"]:
+        print("     " + t)
+    return 0 if r["rc"] == 0 else 1
+
+
 def cmd_submit(a):
     from . import jobqueue
-    print("queued", jobqueue.submit(_p(), a.file, a.name))
+    p = _p()
+    print("queued", jobqueue.submit(p, a.file, a.name, require_contract=_cfg(p)["mode"] != "lite"))
     return 0
 
 
@@ -283,6 +295,8 @@ def build() -> argparse.ArgumentParser:
     s.add_argument("--no-probe", action="store_true", help="skip the one-call backend check")
     s.add_argument("--force", action="store_true")
     s.add_argument("--yes", "-y", action="store_true", help="never prompt")
+    s.add_argument("--lite", action="store_true",
+                   help="no job contracts; plain-language checks (file:, words:, contains:, review:)")
     s.set_defaults(f=cmd_init)
 
     for name in ("adopt", "plan"):
@@ -298,6 +312,10 @@ def build() -> argparse.ArgumentParser:
     s.set_defaults(f=cmd_step)
 
     sp.add_parser("done", help="run the goal's done bar").set_defaults(f=cmd_done)
+
+    s = sp.add_parser("check", help="run one check now, e.g. tw check 'words: out/post.md 300-500'")
+    s.add_argument("check")
+    s.set_defaults(f=cmd_check)
 
     s = sp.add_parser("submit", help="queue a job with an output contract")
     s.add_argument("file")

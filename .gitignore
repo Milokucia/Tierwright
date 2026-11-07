@@ -6,10 +6,11 @@ dist/
 .venv/
 examples/*/.tierwright/
 examples/*/tierwright.yaml
-examples/*/goal.yaml
 examples/*/steps/
 examples/*/*.md
 !examples/*/README.md
 examples/*/.claude/
 examples/*/hello.sh
 examples/*/.gitignore
+examples/*/out/
+!examples/*/brand.md

@@ -20,11 +20,10 @@ detailing: later ones are re-planned with what was learned (`tw adopt --refresh`
 from __future__ import annotations
 
 import re
-import subprocess
 
 import yaml
 
-from . import ledger, schemas
+from . import checks, ledger, schemas
 from .project import Project, ProjectError, clip, now
 
 STATUSES = ("open", "locked", "passed", "failed")
@@ -39,6 +38,10 @@ def load_goal(p: Project) -> dict:
         raise StepError("goal.yaml missing: run `tw init` or write one")
     g = yaml.safe_load(p.goal_path.read_text()) or {}
     errs = []
+    try:
+        g["done"] = [checks.normalize(x) for x in (g.get("done") or [])]
+    except checks.CheckError as e:
+        errs.append(f"done: {e}")
     if not str(g.get("goal", "")).strip():
         errs.append("goal: empty")
     if not isinstance(g.get("done", []), list) or not g.get("done"):
@@ -57,6 +60,7 @@ def load(p: Project) -> list[dict]:
     out = []
     for f in sorted(p.steps_dir.glob("[0-9][0-9][0-9]-*.yaml")):
         s = yaml.safe_load(f.read_text()) or {}
+        s["gate"] = [checks.normalize(x) if isinstance(x, (str, dict)) else x for x in (s.get("gate") or [])]
         s["_file"] = str(f)
         out.append(s)
     return out
@@ -131,18 +135,13 @@ def current(p: Project) -> dict | None:
     return None
 
 
-def run_gate(p: Project, cmds: list[str], timeout: float = 1800) -> list[dict]:
+def run_gate(p: Project, items: list, timeout: float = 1800) -> list[dict]:
+    """Run checks in order; stop at the first failure (cheap checks first is the author's job)."""
     out = []
-    for c in cmds:
-        t0 = now()
-        try:
-            pr = subprocess.run(c, shell=True, cwd=p.root, capture_output=True, text=True,
-                                timeout=timeout)
-            rc, tail = pr.returncode, (pr.stdout + pr.stderr).strip().splitlines()[-8:]
-        except subprocess.TimeoutExpired:
-            rc, tail = 124, [f"timeout after {timeout}s"]
-        out.append({"cmd": c, "rc": rc, "s": round(now() - t0, 1), "tail": tail})
-        if rc != 0:
+    for it in items:
+        r = checks.run(p, it, timeout=timeout)
+        out.append(r)
+        if r["rc"] != 0:
             break
     return out
 

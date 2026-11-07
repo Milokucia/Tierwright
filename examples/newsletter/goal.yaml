@@ -1,0 +1,8 @@
+goal: "A weekly newsletter announcing this week's feature, on brand."
+done:
+  - "file: out/newsletter.md"
+  - "words: out/newsletter.md 300-500"
+  - "contains: out/newsletter.md: acme.com/demo"
+  - "lacks: out/newsletter.md: revolutionary, game-changing, unleash"
+  - "review: out/newsletter.md against brand.md: one call to action, short paragraphs"
+out_of_scope: []

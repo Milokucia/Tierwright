@@ -21,6 +21,25 @@ tw status                         # the whole project in <= 20 lines
 
 Until it is on PyPI: `pip install git+https://github.com/Milokucia/Tierwright`.
 
+## Lite mode, for work that isn't code
+
+`tw init --lite` keeps the model tiers, budgets, step ladder and `tw mine`,
+and drops job contracts. Goals and steps are checked in plain language:
+
+```yaml
+done:
+  - "file: out/newsletter.md"
+  - "words: out/newsletter.md 300-500"
+  - "contains: out/newsletter.md: acme.com/demo"
+  - "lacks: out/newsletter.md: revolutionary, game-changing"
+  - "review: out/newsletter.md against brand.md: one call to action"
+```
+
+`review:` asks the judge role (Haiku) for a pass or fail against your guide,
+and every fail must cite a rule. The guide for non-engineers is
+`docs/lite.md`, and a worked example is in `examples/newsletter/`. These
+checks also work in full mode, mixed with shell commands.
+
 ## Why
 
 Left alone, an AI harness spends tokens on work code could do: polling jobs,
@@ -162,7 +181,7 @@ nothing, or writes garbage, fails its contract and is stopped.
 ## Commands
 
 ```
-tw init / adopt / plan / step show|list|check / done
+tw init [--lite] / adopt / plan / step show|list|check / done / check 'CHECK'
 tw submit JOB / queue run [--watch] / queue stop NAME / dispatch / brief JOB
 tw contract [lint FILE...]   tw rule list|add|backtest   tw ask ROLE [FILE]
 tw route [ROLE]   tw spend   tw ledger [dnr]   tw status

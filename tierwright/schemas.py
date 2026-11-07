@@ -47,6 +47,7 @@ ROLES = {
     "reporter": obj({"summary": S}),
     "extract": obj({"purpose": S, "public_api": arr(S), "depends_on": arr(S), "tested_by": arr(S)}),
     "planner": obj({"summary": S, "steps": arr(STEP)}),
+    "judge": obj({"verdict": {"type": "string", "enum": ["pass", "fail"]}, "reasons": arr(S)}),
     "builder": obj({"status": {"type": "string", "enum": ["done", "blocked"]},
                     "changed": arr(S), "gate_ran": arr(S), "note": S}),
 }

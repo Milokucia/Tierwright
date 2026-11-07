@@ -13,6 +13,7 @@ import yaml
 from .project import Project, ProjectError
 
 BACKENDS = ("subscription", "api", "both")
+MODES = ("full", "lite")
 TIERS = ("T0", "T1", "T2", "T3")
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
@@ -21,6 +22,7 @@ DEFAULT_ROLES = {
     "triage":   {"tier": "T1"},   # classify a failure no rule matched
     "extract":  {"tier": "T1"},   # repo-map summaries, field extraction
     "reporter": {"tier": "T1"},   # one-line prose for status / handoff
+    "judge":    {"tier": "T1"},   # pass/fail a document against a guide (`review:` checks)
     "diagnose": {"tier": "T2"},   # ranked hypotheses + one probe
     "review":   {"tier": "T2"},   # milestone / code-area review
     "planner":  {"tier": "T3"},   # goal + codebase -> step ladder
@@ -29,11 +31,12 @@ DEFAULT_ROLES = {
 
 # With backend "both": which backend each role uses unless overridden.
 # High-volume / batchable roles go to the API; long interactive builds to the plan.
-BOTH_SPLIT = {"triage": "api", "extract": "api", "reporter": "api", "review": "api",
+BOTH_SPLIT = {"triage": "api", "extract": "api", "reporter": "api", "review": "api", "judge": "api",
               "diagnose": "subscription", "planner": "subscription", "builder": "subscription"}
 
 DEFAULTS = {
     "version": 1,
+    "mode": "full",
     "backend": "subscription",
     "budgets": {"per_call_usd": 1.0, "per_day_usd": 10.0, "per_goal_usd": 50.0},
     "tiers": {
@@ -70,6 +73,8 @@ class ConfigError(ProjectError):
 
 def validate(cfg: dict) -> list[str]:
     errs = []
+    if cfg.get("mode") not in MODES:
+        errs.append(f"mode must be one of {MODES}, got {cfg.get('mode')!r}")
     if cfg.get("backend") not in BACKENDS:
         errs.append(f"backend must be one of {BACKENDS}, got {cfg.get('backend')!r}")
     for k in ("per_call_usd", "per_day_usd", "per_goal_usd"):
@@ -120,11 +125,16 @@ def role(cfg: dict, name: str) -> dict:
     return out
 
 
-def render(backend: str, per_day: float, per_goal: float) -> str:
+def render(backend: str, per_day: float, per_goal: float, mode: str = "full") -> str:
     """The tierwright.yaml written by `tw init`, commented so it is self-explaining."""
     split = "\n".join(f"#   {r}: {{backend: {b}}}" for r, b in BOTH_SPLIT.items())
     return f"""# Tierwright config. Docs: README.md (section Config).
 version: 1
+
+# full: jobs need output contracts (heavy CLI / infra work).
+# lite: no job contracts; goals and steps use plain-language checks
+#       (file:, words:, contains:, lacks:, review: ... against GUIDE).
+mode: {mode}
 
 # Where agents run: subscription (headless `claude -p` on your plan),
 # api (Anthropic API key, pay per token), or both (split per role below).
@@ -154,5 +164,6 @@ hooks:
 """
 
 
-def write_default(path: Path, backend: str, per_day: float = 10.0, per_goal: float = 50.0) -> None:
-    path.write_text(render(backend, per_day, per_goal))
+def write_default(path: Path, backend: str, per_day: float = 10.0, per_goal: float = 50.0,
+                  mode: str = "full") -> None:
+    path.write_text(render(backend, per_day, per_goal, mode))

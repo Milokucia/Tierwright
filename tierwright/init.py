@@ -47,7 +47,8 @@ def _merge_settings(path: Path) -> bool:
 
 def run(root: str, backend: str | None = None, per_day: float | None = None,
         per_goal: float | None = None, goal: str | None = None, done: list[str] | None = None,
-        probe: bool = True, force: bool = False, interactive: bool | None = None) -> dict:
+        probe: bool = True, force: bool = False, interactive: bool | None = None,
+        lite: bool = False) -> dict:
     p = Project(root)
     interactive = sys.stdin.isatty() if interactive is None else interactive
     if p.config_path.exists() and not force:
@@ -55,6 +56,9 @@ def run(root: str, backend: str | None = None, per_day: float | None = None,
     if backend is None:
         if not interactive:
             raise config.ConfigError("--backend subscription|api|both is required when not interactive")
+        if lite:
+            print("Tierwright lite: the right-sized Claude model for each task, a budget, and a check\n"
+                  "that proves each piece of work is done.\n")
         print("Where should agents run?\n"
               "  subscription  headless `claude -p` on your Claude plan (no per-token bill)\n"
               "  api           Anthropic API key, pay per token; batch + caching for high volume\n"
@@ -69,12 +73,19 @@ def run(root: str, backend: str | None = None, per_day: float | None = None,
     if goal is None and interactive and not p.goal_path.exists():
         goal = _ask("goal, one sentence (blank: edit goal.yaml later)", default="") or None
         if goal and not done:
-            d = _ask("done bar: a shell command that exits 0 only when done", default="true")
-            done = [d]
+            if lite:
+                out = _ask("where will the finished result be saved (a file path)", default="out/result.md")
+                done = [f"file: {out}"]
+                guide = _ask("a guide it must follow, e.g. brand.md (blank: none)", default="")
+                if guide:
+                    done.append(f"review: {out} against {guide}")
+            else:
+                d = _ask("done bar: a shell command that exits 0 only when done", default="true")
+                done = [d]
 
     p.ensure()
     wrote = []
-    config.write_default(p.config_path, backend, per_day, per_goal)
+    config.write_default(p.config_path, backend, per_day, per_goal, "lite" if lite else "full")
     wrote.append("tierwright.yaml")
     if not p.goal_path.exists():
         if goal:
@@ -100,7 +111,7 @@ def run(root: str, backend: str | None = None, per_day: float | None = None,
     if _merge_settings(p.root / ".claude" / "settings.json"):
         wrote.append(".claude/settings.json (guard hooks)")
     cm = p.root / "CLAUDE.md"
-    section = _tpl("CLAUDE.section.md")
+    section = _tpl("CLAUDE.lite.md" if lite else "CLAUDE.section.md")
     if not cm.exists():
         cm.write_text(f"# CLAUDE.md\n\n{section}")
         wrote.append("CLAUDE.md")
@@ -120,4 +131,5 @@ def run(root: str, backend: str | None = None, per_day: float | None = None,
         cfg = config.load(p)
         for b in (["subscription", "api"] if backend == "both" else [backend]):
             probes[b] = router.probe(p, cfg, b) or "ok"
-    return {"root": str(p.root), "backend": backend, "wrote": wrote, "probes": probes}
+    return {"root": str(p.root), "backend": backend, "mode": "lite" if lite else "full",
+            "wrote": wrote, "probes": probes}

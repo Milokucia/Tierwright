@@ -23,6 +23,7 @@ Be short. Answer, then stop. Say what changed and what to run.
 | `backends` | subscription, api and fake backends |
 | `schemas` | role output schemas |
 | `steps` | goal and step ladder |
+| `checks` | plain-language checks (file, words, contains, lacks, review, run) |
 | `adopt` | inventory, fit, repo map and plan |
 | `mine` | transcripts -> mined tools, digests and rules |
 | `hooks` | Claude Code guards |

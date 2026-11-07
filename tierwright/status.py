@@ -9,7 +9,7 @@ from .project import Project, clip, stamp
 
 def lines(p: Project) -> list[str]:
     cfg = config.load(p)
-    out = [f"Tierwright status {stamp()} UTC, backend {cfg['backend']}"]
+    out = [f"Tierwright status {stamp()} UTC, {cfg['mode']} mode, backend {cfg['backend']}"]
     try:
         g = steps.load_goal(p)
         out.append(f"goal: {clip(g['goal'], 100)}")

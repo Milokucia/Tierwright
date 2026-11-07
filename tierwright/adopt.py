@@ -29,7 +29,7 @@ import subprocess
 from collections import Counter
 from pathlib import Path
 
-from . import ledger, router, steps
+from . import checks, ledger, router, steps
 from .project import Project, clip, stamp, write_json
 
 SKIP_DIRS = {".git", ".tierwright", "node_modules", "__pycache__", ".venv", "venv", "dist",
@@ -216,6 +216,13 @@ def repo_map(p: Project, cfg: dict, use_model: bool, limit: int = 60) -> dict:
 # Plan -------------------------------------------------------------------------
 def _gate_resolves(root: Path, cmd: str, planned_adds: set[str] | None = None) -> str | None:
     try:
+        c = checks.parse(cmd)
+    except checks.CheckError as e:
+        return str(e)
+    if c["kind"] != "run":
+        return checks.problems(Project(root), cmd, planned_adds)
+    cmd = c["cmd"]
+    try:
         toks = shlex.split(cmd)
     except ValueError as e:
         return f"cannot parse: {e}"
@@ -285,7 +292,7 @@ FIT_STEPS = {
 }
 
 
-def t0_plan(p: Project, fitted: dict, inv: dict) -> dict:
+def t0_plan(p: Project, fitted: dict, inv: dict, lite: bool = False) -> dict:
     """Start where the goal is: the goal step first, gated by the done bar;
     then only the hardening the fit table shows missing."""
     g = steps.load_goal(p)
@@ -293,7 +300,7 @@ def t0_plan(p: Project, fitted: dict, inv: dict) -> dict:
             "why": "Start where the goal is. Its gate is the done bar; detail its changes with `tw adopt` "
                    "(planner) or build it directly.",
             "changes": [], "gate": list(g["done"]), "tier": "T3", "budget_usd": 10.0, "depends_on": []}]
-    for name in ("tests", "ci"):
+    for name in (() if lite else ("tests", "ci")):
         if fitted.get(name, {}).get("status") != "missing":
             continue
         goal, why, changes, gate, tier = FIT_STEPS[name]
@@ -314,7 +321,7 @@ def plan(p: Project, cfg: dict, use_model: bool = True, map_limit: int = 60, ref
     fitted = fit(p.root, inv)
     passed = [s for s in steps.load(p) if s.get("status") == "passed"]
     if not use_model:
-        pl = t0_plan(p, fitted, inv)
+        pl = t0_plan(p, fitted, inv, lite=cfg.get("mode") == "lite")
         errs = validate_plan(p, cfg, pl)
         if errs:  # drop gates a T0 plan cannot know yet rather than show a broken plan
             pl["steps"] = [s for s in pl["steps"] if not any(e.startswith(s["id"] + ":") for e in errs)]
@@ -324,6 +331,7 @@ def plan(p: Project, cfg: dict, use_model: bool = True, map_limit: int = 60, ref
         rmap = repo_map(p, cfg, use_model=True, limit=map_limit)
         payload = {
             "goal": g,
+            "mode": cfg.get("mode", "full"),
             "inventory": inv,
             "fit": fitted,
             "repo_map": {f: {k: v for k, v in m.items() if k in ("summary", "defs", "lines")}

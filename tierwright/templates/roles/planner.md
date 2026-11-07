@@ -9,6 +9,10 @@ Every step:
 - `gate`: shell commands, run from the project root, that exit 0 ONLY when
   the step is done. Prefer the project's own test command. A gate may run a
   file an earlier step adds.
+- In `mode: lite` (and wherever it fits), prefer plain-language checks over
+  shell: `file: PATH`, `words: PATH 400-600`, `contains: PATH: a, b`,
+  `lacks: PATH: a, b`, `review: PATH against GUIDE: criteria`. Put cheap
+  checks before `review:` (a model call).
 - `tier`: the cheapest that can do it: T1 extraction/boilerplate, T2 normal
   code, T3 design or novel work.
 - `depends_on`: earlier step ids only.
