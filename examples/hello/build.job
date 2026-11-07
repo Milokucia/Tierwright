@@ -1,0 +1,5 @@
+#@ timeout 60s
+#@ forbid crash re='Traceback'
+#@ artifact hello.sh min_size=5
+echo 'echo hi' > hello.sh
+echo built

@@ -1,0 +1,329 @@
+"""tw / tierwright command line.
+
+  tw init [--backend subscription|api|both] [--per-day USD] [--per-goal USD] [--goal TEXT --done CMD]
+  tw adopt [--no-model] [--refresh] [--map-limit N]   codebase + goal -> validated step ladder, GAP.md
+  tw plan                                         same as adopt (for a new, empty project)
+  tw step show|list|check [ID]                    the ladder; check runs the open step's gate
+  tw done                                         run the goal's done bar
+  tw submit JOB [--name N]                        queue a job (needs an output contract)
+  tw queue run [--watch] | stop NAME              run jobs; the dispatcher acts on each end
+  tw dispatch                                     process unread events now
+  tw brief JOB                                    the compact JSON a rule or model reads
+  tw contract lint FILE... | --help               check contract syntax
+  tw rule list | add --name .. --re .. --action .. --class .. --incident .. [--job J] | backtest ...
+  tw ask ROLE [FILE|-]                            call a role through the router (JSON in, JSON out)
+  tw route [ROLE]                                 which tier / backend / model each role resolves to
+  tw spend                                        model spend by role, tier, backend
+  tw ledger [dnr] [-n N]                          recent ledger lines, or the do-not-repeat list
+  tw status                                       <= 20 lines; also writes STATUS.md, HANDOFF.md
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+from . import __version__
+
+
+def _p():
+    from .project import Project, find_root
+    return Project(find_root()).ensure()
+
+
+def _cfg(p):
+    from . import config
+    return config.load(p)
+
+
+def cmd_init(a):
+    from . import init
+    r = init.run(".", a.backend, a.per_day, a.per_goal, a.goal, a.done or None,
+                 probe=not a.no_probe, force=a.force,
+                 interactive=None if not a.yes else False)
+    print(f"tierwright initialized, backend {r['backend']}: " + ", ".join(r["wrote"]))
+    for b, v in r["probes"].items():
+        print(f"probe {b}: {v}")
+    if any(v != "ok" for v in r["probes"].values()):
+        print("a backend probe failed: fix it or re-run `tw init --force --backend ...`")
+        return 1
+    print("next: edit goal.yaml, then `tw adopt`")
+    return 0
+
+
+def cmd_adopt(a):
+    from . import adopt
+    p = _p()
+    r = adopt.plan(p, _cfg(p), use_model=not a.no_model, map_limit=a.map_limit, refresh=a.refresh)
+    present = sum(1 for v in r["fit"].values() if v["status"] != "missing")
+    print(f"{len(r['steps'])} new step(s) from {r['source']}; {present}/{len(r['fit'])} components covered; "
+          f"{r['summarized_now']} module(s) summarized. Read GAP.md; next: `tw step show`.")
+    return 0
+
+
+def cmd_step(a):
+    from . import steps
+    p = _p()
+    if a.action == "list":
+        for s in steps.load(p):
+            print(f"{s.get('status', '?'):7} {s['id']:24} {s.get('tier', '?')}  {s.get('goal', '')}")
+        return 0
+    if a.action == "show":
+        s = steps.current(p) if not a.id else next((x for x in steps.load(p) if x["id"] == a.id), None)
+        if not s:
+            print("no open step: `tw adopt` to plan, or `tw done` if all passed")
+            return 1
+        print(Path(s["_file"]).read_text())
+        return 0
+    r = steps.check(p, a.id)
+    for x in r["results"]:
+        print(f"{'ok  ' if x['rc'] == 0 else 'FAIL'} {x['cmd']} ({x['s']}s)")
+        if x["rc"] != 0:
+            print("     " + "\n     ".join(x["tail"]))
+    print(f"step {r['step']}: {'PASSED' if r['pass'] else 'FAILED'}" + (f"; next open: {r['next']}" if r["next"] else ""))
+    return 0 if r["pass"] else 1
+
+
+def cmd_done(a):
+    from . import steps
+    r = steps.done(_p())
+    for x in r["results"]:
+        print(f"{'ok  ' if x['rc'] == 0 else 'FAIL'} {x['cmd']}")
+    print("DONE BAR MET" if r["pass"] else "done bar not met")
+    return 0 if r["pass"] else 1
+
+
+def cmd_submit(a):
+    from . import jobqueue
+    print("queued", jobqueue.submit(_p(), a.file, a.name))
+    return 0
+
+
+def _on_end(p, cfg):
+    from . import dispatch
+
+    def f(meta):
+        for d in dispatch.poll(p, cfg):
+            print(f"[dispatch] {d['job']}: {d['action']} ({d.get('rule') or d['class']}) -> {d.get('applied')}")
+        if meta:
+            v = meta["contract"]
+            print(f"[end] {meta['job']} rc={meta['rc']} {meta['reason']} contract={'pass' if v['pass'] else 'FAIL'}")
+    return f
+
+
+def cmd_queue(a):
+    from . import jobqueue
+    p = _p()
+    cfg = _cfg(p)
+    if a.action == "stop":
+        ok = jobqueue.stop(p, a.name)
+        print("stopped" if ok else f"{a.name} is not pending")
+        return 0 if ok else 1
+    jobqueue.run(p, once=not a.watch, default_timeout=cfg["limits"]["job_timeout_s"], on_end=_on_end(p, cfg))
+    return 0
+
+
+def cmd_dispatch(a):
+    p = _p()
+    _on_end(p, _cfg(p))(None)
+    return 0
+
+
+def cmd_brief(a):
+    from . import brief
+    print(json.dumps(brief.build(_p(), a.job), indent=1))
+    return 0
+
+
+def cmd_contract(a):
+    from . import contract
+    if not a.files:
+        print(contract.__doc__)
+        return 0
+    bad = 0
+    for f in a.files:
+        try:
+            cs = contract.parse(Path(f).read_text())
+            real = [c for c in cs if c.kind not in ("log", "after", "mode")]
+            print(f"{f}: {len(real)} check(s)" + ("" if real else "  NO CONTRACT"))
+            bad += not real
+        except (contract.ContractError, OSError) as e:
+            print(f"{f}: {e}")
+            bad += 1
+    return 1 if bad else 0
+
+
+def cmd_rule(a):
+    from . import rules
+    p = _p()
+    if a.action == "list":
+        for r in rules.load(p):
+            print(f"{r.name:22} {r.action:9} {r.cls:12} {r.incident}")
+        return 0
+    d = {"name": a.name, "re": a.re, "action": a.rule_action, "class": a.cls, "incident": a.incident}
+    if a.rc is not None:
+        d["rc"] = a.rc
+    if a.action == "backtest":
+        bt = rules.backtest(p, rules.from_dict(d), a.job)
+    else:
+        bt = rules.add(p, d, a.job)
+    for c in bt["changed"]:
+        print(f"changes {c['job']}: {c['from']} -> {c['to']}")
+    for e in bt["errors"]:
+        print("REFUSED:", e)
+    if a.action == "add" and bt["ok"]:
+        print(f"rule {a.name} added to .tierwright/rules.yaml")
+    return 0 if bt["ok"] else 1
+
+
+def cmd_ask(a):
+    from . import router
+    p = _p()
+    raw = sys.stdin.read() if a.file in (None, "-") else Path(a.file).read_text()
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        payload = raw
+    print(json.dumps(router.call(p, _cfg(p), a.role, payload), indent=1))
+    return 0
+
+
+def cmd_route(a):
+    from . import config
+    cfg = _cfg(_p())
+    for r in ([a.role] if a.role else list(config.DEFAULT_ROLES)):
+        x = config.role(cfg, r)
+        print(f"{r:10} {x['tier']}  {x['backend']:12} {x.get('model', '-')} {x.get('effort', '')}")
+    return 0
+
+
+def cmd_spend(a):
+    from . import router
+    sm = router.summary(_p())
+    if not sm:
+        print("no model calls yet")
+    for k, v in sorted(sm.items(), key=lambda kv: -kv[1]["cost_usd"]):
+        print(f"{k:34} {v['calls']:4} calls  ${v['cost_usd']:.4f}  in {v['in']}  out {v['out']}  rejected {v['rejected']}")
+    return 0
+
+
+def cmd_ledger(a):
+    from . import ledger
+    p = _p()
+    out = ledger.do_not_repeat(p) if a.what == "dnr" else ledger.lines(p, a.n)
+    print("\n".join(out) or "(empty)")
+    return 0
+
+
+def cmd_status(a):
+    from . import status
+    print(status.write(_p()), end="")
+    return 0
+
+
+def build() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(prog="tw", description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--version", action="version", version=f"tierwright {__version__}")
+    sp = ap.add_subparsers(dest="cmd", required=True)
+
+    s = sp.add_parser("init", help="set up a project (asks subscription / api / both)")
+    s.add_argument("--backend", choices=["subscription", "api", "both"])
+    s.add_argument("--per-day", type=float)
+    s.add_argument("--per-goal", type=float)
+    s.add_argument("--goal")
+    s.add_argument("--done", action="append", help="done-bar command (repeatable)")
+    s.add_argument("--no-probe", action="store_true", help="skip the one-call backend check")
+    s.add_argument("--force", action="store_true")
+    s.add_argument("--yes", "-y", action="store_true", help="never prompt")
+    s.set_defaults(f=cmd_init)
+
+    for name in ("adopt", "plan"):
+        s = sp.add_parser(name, help="codebase + goal -> validated step ladder and GAP.md")
+        s.add_argument("--no-model", action="store_true", help="T0 only: plan from the fit table")
+        s.add_argument("--refresh", action="store_true", help="re-plan the steps not yet passed")
+        s.add_argument("--map-limit", type=int, default=60)
+        s.set_defaults(f=cmd_adopt)
+
+    s = sp.add_parser("step", help="the step ladder")
+    s.add_argument("action", choices=["show", "list", "check"])
+    s.add_argument("id", nargs="?")
+    s.set_defaults(f=cmd_step)
+
+    sp.add_parser("done", help="run the goal's done bar").set_defaults(f=cmd_done)
+
+    s = sp.add_parser("submit", help="queue a job with an output contract")
+    s.add_argument("file")
+    s.add_argument("--name")
+    s.set_defaults(f=cmd_submit)
+
+    s = sp.add_parser("queue", help="run or stop jobs")
+    s.add_argument("action", choices=["run", "stop"])
+    s.add_argument("name", nargs="?")
+    s.add_argument("--watch", action="store_true", help="keep running and wait for new jobs")
+    s.set_defaults(f=cmd_queue)
+
+    sp.add_parser("dispatch", help="process unread events").set_defaults(f=cmd_dispatch)
+
+    s = sp.add_parser("brief", help="the compact JSON for one finished job")
+    s.add_argument("job")
+    s.set_defaults(f=cmd_brief)
+
+    s = sp.add_parser("contract", help="lint contracts; no files = the contract reference")
+    s.add_argument("lint", nargs="?", choices=["lint"])
+    s.add_argument("files", nargs="*")
+    s.set_defaults(f=cmd_contract)
+
+    s = sp.add_parser("rule", help="triage rules")
+    s.add_argument("action", choices=["list", "add", "backtest"])
+    s.add_argument("--name")
+    s.add_argument("--re")
+    s.add_argument("--rc", type=int)
+    s.add_argument("--action", dest="rule_action", choices=["ok", "ignore", "resubmit", "diagnose"])
+    s.add_argument("--class", dest="cls")
+    s.add_argument("--incident")
+    s.add_argument("--job", help="the incident job the rule must match")
+    s.set_defaults(f=cmd_rule)
+
+    s = sp.add_parser("ask", help="call a role through the router")
+    s.add_argument("role")
+    s.add_argument("file", nargs="?")
+    s.set_defaults(f=cmd_ask)
+
+    s = sp.add_parser("route", help="role -> tier / backend / model")
+    s.add_argument("role", nargs="?")
+    s.set_defaults(f=cmd_route)
+
+    sp.add_parser("spend", help="model spend by role / tier / backend").set_defaults(f=cmd_spend)
+
+    s = sp.add_parser("ledger", help="recent ledger lines, or `dnr` for do-not-repeat")
+    s.add_argument("what", nargs="?", choices=["dnr"])
+    s.add_argument("-n", type=int, default=15)
+    s.set_defaults(f=cmd_ledger)
+
+    sp.add_parser("status", help="<= 20 lines; writes STATUS.md and HANDOFF.md").set_defaults(f=cmd_status)
+    return ap
+
+
+def main(argv: list[str] | None = None) -> int:
+    from .project import ProjectError
+    from .contract import ContractError
+    from .router import BudgetExceeded, CallFailed
+    a = build().parse_args(argv)
+    if a.cmd == "rule" and a.action in ("add", "backtest"):
+        miss = [k for k in ("name", "rule_action", "cls", "incident") if not getattr(a, k)]
+        if miss:
+            print("tw rule " + a.action + " needs --" + ", --".join(m.replace("rule_", "").replace("cls", "class") for m in miss))
+            return 2
+    if a.cmd == "queue" and a.action == "stop" and not a.name:
+        print("tw queue stop NAME")
+        return 2
+    try:
+        return a.f(a)
+    except (ProjectError, ContractError, BudgetExceeded, CallFailed, FileNotFoundError, ValueError) as e:
+        print(f"tw: {e}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 130
