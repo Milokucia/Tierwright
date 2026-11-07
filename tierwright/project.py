@@ -25,7 +25,7 @@ from pathlib import Path
 CONFIG = "tierwright.yaml"
 STATE = ".tierwright"
 IGNORED = ["queue/", "logs/", "events.jsonl", "events.cursor", "briefs/",
-           "attention/", "runs/", "map.json", "inventory.json"]
+           "attention/", "runs/", "map.json", "inventory.json", "mine.json"]
 
 
 class ProjectError(Exception):

@@ -24,6 +24,7 @@ Be short. Answer, then stop. Say what changed and what to run.
 | `schemas` | role output schemas |
 | `steps` | goal and step ladder |
 | `adopt` | inventory, fit, repo map and plan |
+| `mine` | transcripts -> mined tools, digests and rules |
 | `hooks` | Claude Code guards |
 | `init` | `tw init` |
 | `status` | `tw status` |

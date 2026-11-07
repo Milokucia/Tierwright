@@ -102,6 +102,31 @@ job with #@ contract ──> tw submit ──> tw queue run ──> events.jsonl
 
 `tw adopt --no-model` builds the plan from the fit table alone, at zero cost.
 
+## `tw mine`: build the infrastructure your agents use most
+
+Agents pay again for the same work in every session: the same three status
+commands, the same 9k-token file read, the same unmatched failure diagnosed
+again. `tw mine` reads this project's Claude Code transcripts
+(`~/.claude/projects/<project>/`) and Tierwright's own records, ranks those
+repeats by estimated tokens, and turns them into code:
+
+| Seen in transcripts | Becomes | Checked by |
+|---|---|---|
+| the same command sequence, 3 or more times | `tw tool NAME`: one call, output trimmed | read-only commands only; the script and the originals both run, and the script must carry each original's output |
+| the same large file read again and again | `tw digest PATH`: a cached T1 summary, regenerated when the file changes | the extract role's schema |
+| the same unmatched failure, twice | a triage rule | backtest: matches its incidents, flips no job that finished ok |
+| polling, or a role whose answers keep getting rejected | a note in MINE.md | needs a person |
+
+```
+tw mine                 # writes MINE.md: ID, kind, times seen, est. tokens saved, valid
+tw mine apply ID        # install one; adds a line to CLAUDE.md and the ledger
+tw tool                 # list installed tools; the next `tw mine` reports how often each was used
+```
+
+Nothing is installed unless it passes its check. A tool whose commands are
+not read-only is shown but never installed automatically (`--force` installs
+it unverified).
+
 ## Output contracts
 
 Every job file states what its outputs must look like (`tw contract` prints
@@ -141,6 +166,7 @@ tw init / adopt / plan / step show|list|check / done
 tw submit JOB / queue run [--watch] / queue stop NAME / dispatch / brief JOB
 tw contract [lint FILE...]   tw rule list|add|backtest   tw ask ROLE [FILE]
 tw route [ROLE]   tw spend   tw ledger [dnr]   tw status
+tw mine [apply ID]   tw tool [NAME]   tw digest PATH
 ```
 
 A walk-through with no model calls is in `examples/hello/`.
@@ -154,7 +180,8 @@ A walk-through with no model calls is in `examples/hello/`.
 | `steps/` | yes | the step ladder |
 | `.tierwright/ledger.jsonl` | yes | every attempt and verdict |
 | `.tierwright/rules.yaml`, `roles/` | yes | project triage rules, frozen role prompts |
-| `GAP.md`, `STATUS.md`, `HANDOFF.md`, `owner-queue.md` | your call | written by code |
+| `.tierwright/tools/`, `tools.yaml`, `digests/` | yes | mined tools and digests |
+| `GAP.md`, `STATUS.md`, `HANDOFF.md`, `MINE.md`, `owner-queue.md` | your call | written by code |
 | `.tierwright/{queue,logs,briefs,runs,attention}` | no | runtime state |
 
 ## Develop
@@ -174,3 +201,5 @@ behind each.
 - Batch API for reviews.
 - Remote or GPU queue backends.
 - A builder that runs in a git worktree.
+- Mined tools that take arguments, for commands that differ only by one
+  value.

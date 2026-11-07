@@ -15,6 +15,9 @@
   tw route [ROLE]                                 which tier / backend / model each role resolves to
   tw spend                                        model spend by role, tier, backend
   tw ledger [dnr] [-n N]                          recent ledger lines, or the do-not-repeat list
+  tw mine [--days N] | mine apply ID [--force]    build the infrastructure agents repeat most
+  tw tool [NAME]                                  list / run mined tools
+  tw digest PATH                                  cached summary of a file agents re-read
   tw status                                       <= 20 lines; also writes STATUS.md, HANDOFF.md
 """
 
@@ -217,6 +220,48 @@ def cmd_ledger(a):
     return 0
 
 
+def cmd_mine(a):
+    from . import mine
+    p = _p()
+    if a.action == "apply":
+        if not a.id:
+            print("tw mine apply ID")
+            return 2
+        print(mine.apply(p, _cfg(p), a.id, force=a.force))
+        return 0
+    r = mine.run(p, days=a.days, min_count=a.min, dirs=a.transcripts, check=not a.no_check)
+    print(f"{r['transcripts']} transcript(s), {r['calls']} tool calls, ~{r['tokens_seen']} tokens of tool output")
+    for x in r["proposals"][:12]:
+        print(f"{x['id']} {x['kind']:6} {x['count']:3}x ~{x['est_tokens']:>7} tok  "
+              f"{'ok ' if x['valid'] else 'no '} {x.get('name') or x.get('path') or x['why'][:60]}")
+    if not r["proposals"]:
+        print("nothing repeats often enough yet")
+    for n, u in r["applied"].items():
+        print(f"installed {n}: used {u['uses']}x since {u['since']}")
+    print("details: MINE.md; install: tw mine apply ID")
+    return 0
+
+
+def cmd_tool(a):
+    from . import mine
+    p = _p()
+    if not a.name:
+        idx = mine.tools_index(p)
+        for n, t in idx.items():
+            print(f"{n:24} {'; '.join(t['cmds'])[:90]}")
+        if not idx:
+            print("no tools yet: `tw mine`")
+        return 0
+    return mine.run_tool(p, a.name)
+
+
+def cmd_digest(a):
+    from . import mine
+    p = _p()
+    print(mine.digest(p, _cfg(p), a.path))
+    return 0
+
+
 def cmd_status(a):
     from . import status
     print(status.write(_p()), end="")
@@ -302,6 +347,24 @@ def build() -> argparse.ArgumentParser:
     s.add_argument("what", nargs="?", choices=["dnr"])
     s.add_argument("-n", type=int, default=15)
     s.set_defaults(f=cmd_ledger)
+
+    s = sp.add_parser("mine", help="turn what agents repeat most into tools, rules and digests")
+    s.add_argument("action", nargs="?", choices=["apply"])
+    s.add_argument("id", nargs="?")
+    s.add_argument("--days", type=float, default=14)
+    s.add_argument("--min", type=int, default=3, help="minimum repeats")
+    s.add_argument("--transcripts", nargs="*", help="transcript dirs/files (default: this project's)")
+    s.add_argument("--no-check", action="store_true", help="rank only, skip validation")
+    s.add_argument("--force", action="store_true", help="install a tool that is not read-only (unverified)")
+    s.set_defaults(f=cmd_mine)
+
+    s = sp.add_parser("tool", help="list or run mined tools")
+    s.add_argument("name", nargs="?")
+    s.set_defaults(f=cmd_tool)
+
+    s = sp.add_parser("digest", help="cached T1 summary of a file (refreshed when it changes)")
+    s.add_argument("path")
+    s.set_defaults(f=cmd_digest)
 
     sp.add_parser("status", help="<= 20 lines; writes STATUS.md and HANDOFF.md").set_defaults(f=cmd_status)
     return ap
