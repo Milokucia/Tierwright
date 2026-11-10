@@ -12,6 +12,11 @@ from tierwright import brief, cli, config, dispatch, remote, router
 from tierwright.config import ConfigError
 from tierwright.contract import ContractError, parse
 from tierwright.project import read_jsonl
+from tierwright.ledger import entries as _entries
+
+
+def ledger_entries(p, name):
+    return _entries(p, kind="job", name=name)
 
 GOOD = "#@ success smi re='GPUS (\\d+)/(\\d+)' min=1 pct hard\n#@ tag gq-x\nnvidia-smi -L\n"
 
@@ -149,7 +154,7 @@ def test_submit_cmd_gets_file_name_and_extra_args(proj, box, tmp_path):
     cfg = use_ssh(proj, submit_cmd=f"echo {{file}} {{name}} {{host}} > {seen}; echo")
     remote.Remote(proj, cfg).submit(job(proj, "smi", GOOD), "smi_b", ["--tree", "abc"])
     s = seen.read_text().split()
-    assert s[1:] == ["smi_b", "ubuntu@fakebox"] and s[0].endswith("smi.job")
+    assert s[1:] == ["smi_b", "ubuntu@fakebox"] and s[0].endswith("smi_b.sent.job")
     assert not (box / "gq/pending/smi_b.job").exists()   # the script, not scp, copies
     bad = use_ssh(proj, submit_cmd="echo 'no ~/deploy/abc on box' >&2; exit 1")
     with pytest.raises(remote.RemoteError, match="rc=1.*no ~/deploy/abc"):
@@ -196,3 +201,102 @@ def test_cli_passes_extra_args_after_double_dash(proj, box, tmp_path):
     use_ssh(proj, submit_cmd=f"printf '%s ' {{name}} >{seen}; printf '%s ' >>{seen}")
     assert cli.main(["submit", job(proj, "smi", GOOD), "--name", "smi_c", "--", "--tree", "abc"]) == 0
     assert seen.read_text().split() == ["smi_c", "--tree", "abc"]
+
+
+# --- translation of Tierwright-only directives -------------------------------
+
+def test_timeout_and_after_become_box_headers(proj, box):
+    cfg = use_ssh(proj)
+    body = "# GPUS=2\n#@ timeout 90m\n#@ after prep\n#@ forbid x re=NEVER\necho hi\n"
+    name, warn = remote.Remote(proj, cfg).submit(job(proj, "train", body))
+    sent = (box / "gq/pending/train.job").read_text().splitlines()
+    assert sent[:3] == ["# GPUS=2", "# MAX_H=1.5", "# AFTER=~/gq/marks/prep.ok"]
+    assert not any(l.startswith("#@ timeout") or l.startswith("#@ after") for l in sent)
+    assert warn == []
+    assert "#@ timeout 90m" in (proj.q("remote") / "train.job").read_text()   # kept as written
+
+
+def test_untranslatable_directive_is_stripped_with_a_warning(proj, box):
+    cfg = use_ssh(proj, translate={"timeout": "# MAX_H={hours}", "after": None})
+    _, warn = remote.Remote(proj, cfg).submit(job(proj, "j", "#@ after a\n#@ forbid x re=N\necho\n"))
+    assert (box / "gq/pending/j.job").read_text() == "#@ forbid x re=N\necho\n"
+    assert len(warn) == 1 and "after has no equivalent" in warn[0]
+
+
+@pytest.mark.parametrize("body,msg", [
+    ("#@ timeout 1h\n#@ timeout 2h\n#@ forbid x re=N\n", "2 `#@ timeout` lines"),
+    ("#@ after a\n#@ after b\n#@ forbid x re=N\n", "2 `#@ after` lines"),
+    ("# MAX_H=4\n#@ timeout 1h\n#@ forbid x re=N\n", "conflict"),
+    ("# GPUS=2\n# AFTER=~/x\n# FOO=1\n#@ timeout 1h\n#@ forbid x re=N\n", "first 3 lines"),
+    ("#@ after 'bad name'\n#@ forbid x re=N\n", "not a job name"),
+])
+def test_bad_directives_are_refused_before_anything_is_sent(proj, box, body, msg):
+    cfg = use_ssh(proj)
+    with pytest.raises(remote.RemoteError, match=msg):
+        remote.Remote(proj, cfg).submit(job(proj, "j", body))
+    assert not list((box / "gq/pending").iterdir())
+
+
+@pytest.mark.parametrize("tr,msg", [
+    ({"timeout": "# MAX_H=6"}, "queue.translate.timeout must be one line using"),
+    ({"after": "# AFTER=~/x"}, "queue.translate.after must be one line using"),
+    ({"mode": None}, "only \\['after', 'timeout'\\] can be translated"),
+])
+def test_bad_translate_config_is_rejected(proj, tr, msg):
+    raw = yaml.safe_load(proj.config_path.read_text())
+    raw["queue"] = {"backend": "ssh", "host": "h", "translate": tr}
+    proj.config_path.write_text(yaml.safe_dump(raw))
+    with pytest.raises(ConfigError, match=msg):
+        config.load(proj)
+
+
+# --- GQ CONTRACT SKIP --------------------------------------------------------
+
+def test_skip_is_preempted_resubmitted_once_not_a_failure(proj, box):
+    cfg = use_ssh(proj)
+    remote.Remote(proj, cfg).submit(job(proj, "ev", GOOD))
+    ledger(box, "2026-11-10 10:01:00 GQ start ev.job on GPU 1",
+           "2026-11-10 10:03:00 GQ preempt ev.job for a waiting job",
+           "2026-11-10 10:03:30 GQ CONTRACT SKIP ev.job rc=?: preempted for a waiting job [gq-ev]")
+    out = pull(proj, cfg)
+    assert [(d["job"], d["action"], d["rule"]) for d in out] == [("ev", "resubmit", "preempted")]
+    assert brief.build(proj, "ev")["reason"] == "preempted"
+    assert all(e["verdict"] != "fail" for e in ledger_entries(proj, "ev"))
+    pull(proj, cfg)
+    assert (box / "gq/pending/ev_r1.job").exists()
+    ledger(box, "2026-11-10 10:05:00 GQ CONTRACT SKIP ev_r1.job rc=-15: preempted for a waiting job")
+    out = pull(proj, cfg)
+    assert [(d["job"], d["action"]) for d in out] == [("ev_r1", "diagnose")]   # only once
+
+
+def test_bad_skip_regex_is_rejected(proj):
+    raw = yaml.safe_load(proj.config_path.read_text())
+    raw["queue"] = {"backend": "ssh", "host": "h", "events": {"skip": "SKIP (\\S+)"}}
+    proj.config_path.write_text(yaml.safe_dump(raw))
+    with pytest.raises(ConfigError, match="queue.events.skip needs a"):
+        config.load(proj)
+
+
+# --- the box's success ref= / value key= forms -------------------------------
+
+BOX_DIALECT = {"unknown": "error", "opts": {"success": ["ref", "tol", "agg", "max", "in"], "value": ["key", "in"]}}
+
+
+def test_ref_floor_and_key_source_lint_clean_once_declared():
+    text = ("#@ success final in=ledger re='SUCCESS ([0-9.]+)' ref='re:clone ([0-9.]+)' tol=0.05\n"
+            "#@ value sr in=json:out/*.json key=success_rate min=0\n")
+    w = []
+    assert len(parse(text, BOX_DIALECT, w)) == 2 and w == []
+    with pytest.raises(ContractError, match="success takes no option 'ref'"):
+        parse(text)                                  # strict local dialect still refuses
+    with pytest.raises(ContractError, match="success needs min= or ref= or max="):
+        parse("#@ success s re='(\\d+)/(\\d+)' tol=0.1\n", BOX_DIALECT)
+    with pytest.raises(ContractError, match="value needs re= or tag= or key="):
+        parse("#@ value v min=0\n", BOX_DIALECT)
+
+
+def test_local_verifier_skips_foreign_forms(tmp_path):
+    from tierwright.contract import Verifier
+    v = Verifier("#@ success s re='(\\d)' ref=0.5\n#@ forbid x re=N\n", str(tmp_path / "o"), 0,
+                 ext={"opts": {"success": ["ref"]}})
+    assert [c.kind for c in v.checks] == ["forbid"]

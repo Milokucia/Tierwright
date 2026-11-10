@@ -67,6 +67,9 @@ BUILTIN = [
     Rule("dependency-failed", "ignore", "dependency", "an upstream job failed; its own verdict covers it",
          reason="dependency_failed"),
     Rule("ok", "ok", "ok", "rc 0 and every contract check passed", rc=0, reason="exit", when_pass=True),
+    Rule("preempted", "resubmit", "preempted",
+         "stopped by the queue (preempted for another job) before it could finish; not a failure",
+         reason="preempted"),
     Rule("network-transient", "resubmit", "network",
          "registry / mirror blips that pass on rerun",
          re=r"(Connection reset|Temporary failure in name resolution|Could not resolve host|"

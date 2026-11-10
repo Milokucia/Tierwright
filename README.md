@@ -187,11 +187,21 @@ queue:
     stop:  'GQ HEALTH stop (?P<job>\S+?)(?:\.job)?: (?P<detail>.*)'
     pass:  'GQ CONTRACT PASS (?P<job>\S+?)(?:\.job)? rc=(?P<rc>-?\d+)'
     fail:  'GQ CONTRACT FAIL (?P<job>\S+?)(?:\.job)? rc=(?P<rc>-?\d+): (?P<detail>.*)'
+    skip:  'GQ CONTRACT SKIP (?P<job>\S+?)(?:\.job)? rc=(?P<rc>-?\S+): (?P<detail>.*)'
+  translate:                    # Tierwright-only #@ lines -> the box's headers (null = strip + warn)
+    timeout: '# MAX_H={hours}'  # or {minutes} / {seconds}
+    after: '# AFTER=~/gq/marks/{job}.ok'
+  header_lines: 3               # the box reads headers from this many first lines
 ```
 
 - `tw submit JOB [--name N] [-- ARGS]` lints the contract here, then copies
   the job to `pending_dir` with `scp` (refused if the name is already pending,
   running or done there), or runs `submit_cmd` with ARGS appended.
+- `#@ timeout` and `#@ after` are checked by Tierwright's local queue only, so
+  `tw submit` rewrites them as the box's header lines (`translate:`). The job's
+  own headers stay in the first `header_lines`. Two of either directive, one
+  that clashes with the job's own header, or headers pushed past the lines the
+  box reads are refused before anything is sent.
 - `tw queue run` never runs a job here. It sends the dispatcher's resubmits
   to the box, reads the ledger lines added since the last run (a byte offset,
   so nothing is read twice) and writes the same `start` / `end` events a local
@@ -199,7 +209,10 @@ queue:
   brief's tail is the job's own ledger lines (by name or `gq-<name>` tag).
 - `tw queue stop NAME` removes a job that is still pending on the box.
 - Only jobs submitted from this project are tracked. A job ends at its `pass`
-  or `fail` line; a `stop` line before a fail makes it a contract stop.
+  or `fail` line; a `stop` line before a fail makes it a contract stop. A
+  `skip` line (stopped by the queue, e.g. preempted) ends it as `preempted`:
+  the `preempted` rule resubmits it once, and the ledger does not count it as
+  a failure.
 - An unreachable host or a bad `queue:` block fails with one clear line.
   It shells out to `ssh` / `scp`; nothing new to install.
 
@@ -212,8 +225,12 @@ contract:
   unknown: auto                 # auto = warn with an ssh queue, error locally
   kinds: [tag, var]
   flags: [hard, pct]
-  opts: {success: [ref, tol, agg], artifact: [at, if]}
+  opts: {success: [ref, tol, agg], value: [key], artifact: [at, if]}
 ```
+
+A declared alternative also satisfies a required option: `success` needs
+`min=`, or a declared `ref=` floor or `max=` ceiling; `value` needs `re=`, or a
+declared `tag=` or `key=`. The local verifier skips checks in those forms.
 
 ## Guardrails (Claude Code hooks, installed by `tw init`)
 

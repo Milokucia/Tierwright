@@ -59,6 +59,12 @@ OPTS = {
     "success": {"re", "min", "in"},
 }
 FLAGS = {"finite", "warn"}
+# required options; each entry is a set of alternatives. The alternatives after the
+# first are a foreign verifier's forms (ref= floor, max= ceiling, tag= / key= sources): they count
+# only once `contract.opts` declares them.
+NEEDS = {"phase": [["until"], ["max"]], "progress": [["stall"]], "forbid": [["re"]],
+         "value": [["re", "tag", "key"]], "success": [["re"], ["min", "ref", "max"]], "result": [["keys"]]}
+LOCAL_NEEDS = {"value": ["re"], "success": ["re", "min"]}
 END_ONLY = {"artifact", "result", "success"}
 READ_MAX = 8 * 2**20
 
@@ -166,10 +172,10 @@ def parse(text: str, ext: dict | None = None, warnings: list | None = None) -> l
             if len(pos) != 1:
                 raise ContractError(f"line {i}: {kind} needs a NAME")
             c = Check(kind, pos[0], "", opts, flags, i)
-        for need in {"phase": ["until", "max"], "progress": ["stall"], "forbid": ["re"],
-                     "value": ["re"], "success": ["re", "min"], "result": ["keys"]}.get(kind, []):
-            if need not in opts:
-                soft(f"line {i}: {kind} needs {need}=")
+        for need in NEEDS.get(kind, []):
+            # an alternative counts only when it is accepted (built in, or declared in config)
+            if not any(k in opts and k in opts_ok.get(kind, set()) for k in need):
+                soft(f"line {i}: {kind} needs {'= or '.join(need)}=")
         for k in ("re", "until"):
             if k in opts:
                 try:
@@ -216,7 +222,9 @@ class Verifier:
 
     def __init__(self, text: str, stdout_path: str, start: float, env: dict | None = None,
                  cwd: str | None = None, ext: dict | None = None):
-        self.checks = [c for c in parse(text, ext) if c.kind in KINDS]
+        # checks in a foreign form (no re= / min= of their own) are the remote verifier's
+        self.checks = [c for c in parse(text, ext) if c.kind in KINDS
+                       and all(k in c.opts for k in LOCAL_NEEDS.get(c.kind, []))]
         self.start = start
         self.cwd = cwd or os.getcwd()
         self.env = dict(os.environ if env is None else env)

@@ -78,12 +78,22 @@ DEFAULTS = {
             "stop": r"GQ HEALTH stop (?P<job>\S+?)(?:\.job)?: (?P<detail>.*)",
             "pass": r"GQ CONTRACT PASS (?P<job>\S+?)(?:\.job)? rc=(?P<rc>-?\d+)",
             "fail": r"GQ CONTRACT FAIL (?P<job>\S+?)(?:\.job)? rc=(?P<rc>-?\d+): (?P<detail>.*)",
+            # stopped by the queue (preempted) or a coordinator: not judged, resubmitted once
+            "skip": r"GQ CONTRACT SKIP (?P<job>\S+?)(?:\.job)? rc=(?P<rc>-?\S+): (?P<detail>.*)",
         },
+        # Tierwright-only #@ lines -> the remote queue's header lines (null = strip, with a
+        # warning). {hours}/{minutes}/{seconds} for timeout, {job} for after.
+        "translate": {
+            "timeout": "# MAX_H={hours}",
+            "after": "# AFTER=~/gq/marks/{job}.ok",
+        },
+        "header_lines": 3,        # the remote queue reads headers from this many first lines
     },
 }
 
 QUEUE_BACKENDS = ("local", "ssh")
-QUEUE_EVENTS = ("start", "end", "stop", "pass", "fail")
+QUEUE_EVENTS = ("start", "end", "stop", "pass", "fail", "skip")
+TRANSLATE = {"timeout": ("{hours}", "{minutes}", "{seconds}"), "after": ("{job}",)}
 
 
 def _merge(base: dict, over: dict) -> dict:
@@ -163,7 +173,7 @@ def _validate_queue(q: dict) -> list[str]:
     ev = q.get("events") or {}
     for k in QUEUE_EVENTS:
         r = ev.get(k)
-        if r is None and k in ("start", "end", "stop"):
+        if r is None and k in ("start", "end", "stop", "skip"):
             continue
         try:
             rx = re.compile(r)
@@ -174,6 +184,18 @@ def _validate_queue(q: dict) -> list[str]:
             errs.append(f"queue.events.{k} needs a (?P<job>...) group")
     for k in set(ev) - set(QUEUE_EVENTS):
         errs.append(f"queue.events.{k}: unknown event (one of {QUEUE_EVENTS})")
+    tr = q.get("translate")
+    if not isinstance(tr, dict):
+        errs.append("queue.translate must map timeout / after to a header line or null")
+        tr = {}
+    for k, v in tr.items():
+        if k not in TRANSLATE:
+            errs.append(f"queue.translate.{k}: only {sorted(TRANSLATE)} can be translated")
+        elif v is not None and (not isinstance(v, str) or "\n" in v
+                                or not any(f in v for f in TRANSLATE[k])):
+            errs.append(f"queue.translate.{k} must be one line using {' or '.join(TRANSLATE[k])}, or null")
+    if not isinstance(q.get("header_lines"), int) or q["header_lines"] < 1:
+        errs.append("queue.header_lines must be an integer >= 1")
     return errs
 
 

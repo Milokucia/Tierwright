@@ -133,10 +133,9 @@ class Remote:
         text = src.read_text()
         warn: list[str] = []
         ext = _ext(self.cfg)
-        for c in contract.parse(text, ext, warn):
-            if c.kind in ("timeout", "after"):
-                warn.append(f"line {c.line}: {c.kind} is enforced by the local queue only; "
-                            "the remote verifier may refuse it")
+        contract.parse(text, ext, warn)
+        sent, twarn = translate(text, self.q.get("translate") or {}, self.q.get("header_lines", 3))
+        warn += twarn
         if require_contract and not contract.has_contract(text, ext):
             raise RemoteError(f"{src} has no output contract (#@ lines); see `tw contract`.")
         name = (name or src.stem).removesuffix(".job")
@@ -146,8 +145,10 @@ class Remote:
             raise RemoteError(f"job {name} is already queued on {self.host} (tw queue run reads its verdict)")
         if self._offset() is None:  # read from here on, so this job's lines are never skipped
             self.offset_f.write_text(str(self._ledger_size()))
+        out = self.dir / f"{name}.sent.job"     # what the remote queue receives
+        out.write_text(sent)
         if self.q.get("submit_cmd"):
-            self._submit_cmd(src, name, extra or [])
+            self._submit_cmd(out, name, extra or [])
         else:
             if extra:
                 raise RemoteError("extra submit arguments need queue.submit_cmd")
@@ -159,7 +160,7 @@ class Remote:
             if r.stdout.strip():
                 raise RemoteError(f"{name}.job is already pending, running or done on {self.host}: "
                                   "pick another --name")
-            self.scp(str(src), f"{self.q['pending_dir'].rstrip('/')}/{name}.job")
+            self.scp(str(out), f"{self.q['pending_dir'].rstrip('/')}/{name}.job")
         keep = self.dir / f"{name}.job"       # the job as sent, for its brief and a resubmit
         keep.write_text(text)
         self._save({"job": name, "state": "pending", "submitted": now(), "src": str(keep)})
@@ -234,7 +235,7 @@ class Remote:
         return out
 
     def _match(self, line: str, jobs: dict) -> tuple[str, re.Match] | None:
-        for kind in ("start", "end", "stop", "pass", "fail"):
+        for kind in ("start", "end", "stop", "pass", "fail", "skip"):
             rx = self.ev.get(kind)
             m = rx.search(line) if rx else None
             if m and m.group("job").removesuffix(".job") in jobs:
@@ -269,15 +270,17 @@ class Remote:
                 self._save(rec)
                 out.append(events.emit(self.p, "start", job, host=self.host, gpu=gd.get("gpu")))
             elif kind == "end":
-                rec["rc"] = int(gd["rc"]) if gd.get("rc") else None
+                rec["rc"] = _int(gd.get("rc"), None)
                 self._save(rec)
             elif kind == "stop":
                 rec["stopped"] = clip(gd.get("detail") or line, 300)
                 self._save(rec)
             else:
-                rc = int(gd["rc"]) if gd.get("rc") else rec.get("rc")
+                rc = _int(gd.get("rc"), rec.get("rc"))
                 reason = "exit"
-                if kind == "fail" and rec.get("stopped"):
+                if kind == "skip":
+                    reason = "preempted"
+                elif kind == "fail" and rec.get("stopped"):
                     reason = "contract_stop"
                 out.append(self._end(job, rc, reason, gd.get("detail") or "", t, passed=kind == "pass"))
                 jobs.pop(job)
@@ -287,7 +290,7 @@ class Remote:
     def _end(self, job: str, rc, reason: str, detail: str, t: float, passed: bool = False) -> dict:
         rec = json.loads(self._rec_path(job).read_text())
         start = rec.get("start") or rec.get("submitted") or t
-        failed = [] if passed else [
+        failed = [] if passed or reason == "preempted" else [
             {"check": part.split(":", 1)[0].strip(), "kind": "remote", "status": "fail",
              "evidence": clip(part.split(":", 1)[-1].strip(), 300), "hard": True}
             for part in re.split(r";\s+", detail) if part.strip()]
@@ -307,6 +310,63 @@ class Remote:
         self._save(rec)
         return events.emit(self.p, "end", job, rc=rc, reason=reason, contract_pass=passed,
                            duration_s=meta["duration_s"], host=self.host)
+
+
+def _int(s, default):
+    try:
+        return int(s)
+    except (TypeError, ValueError):
+        return default
+
+
+HEADER_RE = re.compile(r"^# ?[A-Z][A-Z0-9_]*=\S")
+
+
+def translate(text: str, tr: dict, header_lines: int = 3) -> tuple[str, list[str]]:
+    """Tierwright-only `#@ timeout` / `#@ after` -> the remote queue's header lines.
+
+    Returns (job text to send, warnings). A directive whose template is null is
+    stripped with a warning. Conflicts (two timeouts, a timeout next to the job's
+    own header, more than one `after`, headers past `header_lines`) raise."""
+    checks = {c.line: c for c in contract.parse(text, {"unknown": "warn"}, [])
+              if c.kind in ("timeout", "after")}
+    if not checks:
+        return text, []
+    lines = text.splitlines()
+    warn, heads = [], []
+    kinds = [c.kind for c in checks.values()]
+    for k in ("timeout", "after"):
+        if kinds.count(k) > 1:
+            raise RemoteError(f"{kinds.count(k)} `#@ {k}` lines: the remote queue takes one")
+    for c in checks.values():
+        tpl = tr.get(c.kind)
+        if tpl is None:
+            warn.append(f"line {c.line}: #@ {c.kind} has no equivalent on the remote queue: stripped")
+            continue
+        if c.kind == "timeout":
+            s = contract.dur(c.arg)
+            h = tpl.format(hours=f"{s / 3600:.4g}", minutes=f"{s / 60:.4g}", seconds=f"{s:.0f}")
+        else:
+            if not NAME_RE.match(c.arg):
+                raise RemoteError(f"line {c.line}: #@ after {c.arg!r} is not a job name")
+            h = tpl.format(job=c.arg)
+        key = h.split("=", 1)[0] + "=" if HEADER_RE.match(h) else None
+        if key and any(l.startswith(key) for l in lines[:header_lines + 1]):
+            raise RemoteError(f"line {c.line}: #@ {c.kind} and the job's own `{key}` header conflict")
+        heads.append(h)
+    body = [l for i, l in enumerate(lines, 1) if i not in checks]
+    top = [body.pop(0)] if body and body[0].startswith("#!") else []
+    # keep the job's own leading headers (# GPUS=2) inside the lines the queue reads
+    while body and HEADER_RE.match(body[0]):
+        top.append(body.pop(0))
+    top += heads
+    out = top + body
+    want = heads + [l for l in lines[:header_lines] if HEADER_RE.match(l)]
+    lost = [l for l in want if l not in out[:header_lines]]
+    if lost:
+        raise RemoteError(f"the remote queue reads headers from the first {header_lines} lines; "
+                          f"{', '.join(lost)} would fall outside them: move or drop one")
+    return "\n".join(out) + "\n", warn
 
 
 def _ext(cfg: dict) -> dict:

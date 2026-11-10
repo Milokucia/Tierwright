@@ -49,7 +49,8 @@ def handle(p: Project, cfg: dict, job: str) -> dict:
     if act == "resubmit":
         new = _resubmit(p, job)
         if new:
-            ledger.record(p, "job", job, "fail", note=f"{v['class']} ({v['rule']}): resubmitted as {new}")
+            ledger.record(p, "job", job, "unknown" if v["class"] == "preempted" else "fail",
+                          note=f"{v['class']} ({v['rule']}): resubmitted as {new}")
             return {**out, "applied": f"resubmit {new}"}
         act = "diagnose"
         note = f"{v['class']}: failed again after a resubmit"
