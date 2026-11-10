@@ -6,6 +6,10 @@ whitelisted action, stamp the ledger.
     ok / ignore   one ledger line
     resubmit      the job's own file back into pending as <name>_r1, once;
                   an _r1 that fails again goes to diagnose
+    tune          a failed job whose trend matches a tune trigger (stall,
+                  plateau below target, decay after peak) and that has a knob
+                  whitelist in `tune:` gets one `tune` call (T2) instead of
+                  diagnose; a checked answer is resubmitted as <name>_tN
     diagnose      attention file (.tierwright/attention/<job>.json: brief +
                   verdict). With dispatch.auto_diagnose the diagnose role (T2)
                   reads the brief and proposes ONE action; the dispatcher
@@ -22,7 +26,7 @@ from __future__ import annotations
 import shutil
 
 from . import brief as brief_mod
-from . import config, events, ledger, router, rules
+from . import config, events, ledger, router, rules, tune, watch
 from .project import Project, owner_note, write_json
 
 APPLY = {"resubmit", "note"}          # what a model's proposal may make code do
@@ -38,6 +42,7 @@ def _resubmit(p: Project, job: str) -> str | None:
     dst = p.q("pending") / f"{job}_r1.job"
     shutil.copy(src, dst)
     events.emit(p, "submit", f"{job}_r1", retry_of=job)
+    watch.copy(p, job, f"{job}_r1")
     return f"{job}_r1"
 
 
@@ -58,10 +63,19 @@ def handle(p: Project, cfg: dict, job: str) -> dict:
     if act in ("ok", "ignore"):
         ledger.record(p, "job", job.removesuffix("_r1"), "ok" if act == "ok" else "same",
                       note=f"{v['rule']}: {b.get('duration_s')}s")
+        if act == "ok":
+            tune.outcome(p, job.removesuffix("_r1"), True, v["note"])
         return {**out, "applied": act}
     # diagnose
     att = {"brief": b, "verdict": v}
     ledger.record(p, "job", job.removesuffix("_r1"), "fail", note=f"{v['class']} ({v['rule']}): {note}")
+    tune.outcome(p, job.removesuffix("_r1"), False, f"{v['class']}: {note}")
+    jf = p.q("done") / f"{job}.job"
+    tuned = tune.maybe(p, cfg, job, jf.read_text(), ended=True) if jf.exists() else None
+    if tuned:       # tune was called: no second model call on the same failure
+        att["tune"] = tuned
+        write_json(p.attention / f"{job}.json", att)
+        return {**out, "action": "tune", "applied": tuned}
     if cfg["dispatch"].get("auto_diagnose"):
         try:
             prop = router.call(p, cfg, "diagnose", {"brief": b, "verdict": v})

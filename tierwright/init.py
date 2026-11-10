@@ -45,6 +45,36 @@ def _merge_settings(path: Path) -> bool:
     return True
 
 
+def templates(p: Project) -> list[str]:
+    """Install the role prompts, subagents and slash commands that are missing.
+    Existing files (possibly edited) are never overwritten."""
+    wrote = []
+    p.ensure()
+    for f in resources.files("tierwright").joinpath("templates/roles").iterdir():
+        dst = p.roles / f.name
+        if not dst.exists():
+            dst.write_text(f.read_text())
+            wrote.append(f"{STATE}/roles/{f.name}")
+    agents = p.root / ".claude" / "agents"
+    agents.mkdir(parents=True, exist_ok=True)
+    for f in resources.files("tierwright").joinpath("templates/agents").iterdir():
+        dst = agents / f.name
+        if not dst.exists():
+            dst.write_text(f.read_text())
+            wrote.append(f".claude/agents/{f.name}")
+    cmds = p.root / ".claude" / "commands"
+    cmds.mkdir(parents=True, exist_ok=True)
+    added = []
+    for f in resources.files("tierwright").joinpath("templates/commands").iterdir():
+        dst = cmds / f.name
+        if not dst.exists():
+            dst.write_text(f.read_text())
+            added.append("/" + f.name.removesuffix(".md"))
+    if added:
+        wrote.append("slash commands " + " ".join(added))
+    return wrote
+
+
 def run(root: str, backend: str | None = None, per_day: float | None = None,
         per_goal: float | None = None, goal: str | None = None, done: list[str] | None = None,
         probe: bool = True, force: bool = False, interactive: bool | None = None,
@@ -96,28 +126,8 @@ def run(root: str, backend: str | None = None, per_day: float | None = None,
             p.goal_path.write_text(_tpl("goal.yaml"))
         wrote.append("goal.yaml")
     (p.state / "goal.started").write_text(str(now()))
-    for f in resources.files("tierwright").joinpath("templates/roles").iterdir():
-        dst = p.roles / f.name
-        if not dst.exists():
-            dst.write_text(f.read_text())
     wrote.append(f"{STATE}/roles/")
-    agents = p.root / ".claude" / "agents"
-    agents.mkdir(parents=True, exist_ok=True)
-    for f in resources.files("tierwright").joinpath("templates/agents").iterdir():
-        dst = agents / f.name
-        if not dst.exists():
-            dst.write_text(f.read_text())
-            wrote.append(f".claude/agents/{f.name}")
-    cmds = p.root / ".claude" / "commands"
-    cmds.mkdir(parents=True, exist_ok=True)
-    added = []
-    for f in resources.files("tierwright").joinpath("templates/commands").iterdir():
-        dst = cmds / f.name
-        if not dst.exists():
-            dst.write_text(f.read_text())
-            added.append("/" + f.name.removesuffix(".md"))
-    if added:
-        wrote.append("slash commands " + " ".join(added))
+    wrote += templates(p)
     if _merge_settings(p.root / ".claude" / "settings.json"):
         wrote.append(".claude/settings.json (guard hooks)")
     cm = p.root / "CLAUDE.md"

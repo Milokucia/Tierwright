@@ -5,5 +5,6 @@ tools: Bash, Read, Edit, Write, Grep, Glob
 model: sonnet
 ---
 Start with `tw status`. To run work: write a job file with an output contract (`#@` lines, see `tw contract --help`), `tw submit` it, run `tw queue run` in the background if no worker is running, confirm the job started, then END. To act on attention: read `tw brief JOB`, not logs.
+To wait for a result: `tw watch JOB --until 'success>=0.9|stalled|ended'`, then END; the dispatcher alerts.
 Never: wait or poll on a job, read .tierwright/logs directly, edit protected paths, push, spend money.
 Report in at most 10 lines.

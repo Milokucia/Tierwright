@@ -5,7 +5,8 @@
 Exit 2 blocks the tool call and the message on stderr goes back to the agent.
 Rules (each switchable in tierwright.yaml `hooks:`):
     block_polling     sleep >= 20s, watch, tail -f, sleep-in-a-loop: agents do
-                      not wait on jobs; the queue and dispatcher do
+                      not wait on jobs; `tw watch JOB --until COND` registers the
+                      wait and the dispatcher checks it
     block_raw_logs    reading .tierwright/logs/*: use `tw brief JOB`
     protected_paths   Edit/Write on a glob listed there (held-out sets, graders)
 """
@@ -22,7 +23,7 @@ import yaml
 
 POLL = [
     (re.compile(r"\bsleep\s+(\d+)"), lambda m: int(m.group(1)) >= 20),
-    (re.compile(r"\bwatch\s+"), lambda m: True),
+    (re.compile(r"(?:^|[;&|(]|\bthen|\bdo)\s*watch\s", re.M), lambda m: True),
     (re.compile(r"\btail\s+(-\w*f|--follow)"), lambda m: True),
     (re.compile(r"\b(while|until)\b.*\bsleep\b", re.S), lambda m: True),
 ]
@@ -58,9 +59,10 @@ def decide(event: dict) -> str | None:
             for rx, bad in POLL:
                 m = rx.search(cmd)
                 if m and bad(m):
-                    return ("Tierwright: polling is blocked. Jobs run in the queue (`tw queue run`) and "
-                            "the dispatcher acts on their end; read `tw status` or `tw brief JOB` once, "
-                            "then end your turn.")
+                    return ("Tierwright: polling is blocked: use tw watch. Register the condition with "
+                            "`tw watch JOB --until 'success>=0.9|stalled|ended'` and end your turn; the "
+                            "dispatcher checks it on every `tw queue run` and writes an attention file "
+                            "and a Pushover alert when it fires. Read `tw brief JOB` once for the trend.")
         if h.get("block_raw_logs") and RAW_LOG.search(cmd) and not TW_CMD.search(cmd):
             return "Tierwright: read `tw brief JOB` (a few KB of JSON), not raw logs."
     if tool in ("Read",) and h.get("block_raw_logs") and RAW_LOG.search(inp.get("file_path", "")):

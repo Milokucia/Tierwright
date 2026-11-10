@@ -12,7 +12,8 @@ A Tierwright project is any directory holding `tierwright.yaml`. Its state:
       rules.yaml           project triage rules (committed)
       roles/               frozen role prompts (committed)
       queue/{pending,running,done}/, logs/, events.jsonl, briefs/,
-      attention/, runs/, map.json, inventory.json   (ignored)
+      attention/, runs/, map.json, inventory.json,
+      trends/, tune/, watches.json                    (ignored)
 """
 
 from __future__ import annotations
@@ -25,7 +26,8 @@ from pathlib import Path
 CONFIG = "tierwright.yaml"
 STATE = ".tierwright"
 IGNORED = ["queue/", "logs/", "events.jsonl", "events.cursor", "briefs/",
-           "attention/", "runs/", "map.json", "inventory.json", "mine.json"]
+           "attention/", "runs/", "map.json", "inventory.json", "mine.json",
+           "trends/", "tune/", "watches.json"]
 
 
 class ProjectError(Exception):

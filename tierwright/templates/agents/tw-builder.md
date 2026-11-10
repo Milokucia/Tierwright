@@ -1,6 +1,6 @@
 ---
 name: tw-builder
-description: Use to build the current open Tierwright step (`tw step show`). Makes that step's changes, runs its gate with `tw step check`, reports. One step per call.
+description: Fallback builder (opus). Prefer the agent `tw step show` names on its `# builder:` line (tw-builder-t1/t2/t3, by step tier). Builds the current open Tierwright step. Makes that step's changes, runs its gate with `tw step check`, reports. One step per call.
 tools: Bash, Read, Edit, Write, Grep, Glob
 model: opus
 ---

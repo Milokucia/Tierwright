@@ -27,6 +27,15 @@ from . import checks, ledger, schemas
 from .project import Project, ProjectError, clip, now
 
 STATUSES = ("open", "locked", "passed", "failed")
+# The builder subagent for a step's declared tier (agent frontmatter fixes the
+# model per agent, so there is one agent per tier). T0 steps are code: haiku runs the gate.
+BUILDERS = {"T0": ("tw-builder-t1", "haiku"), "T1": ("tw-builder-t1", "haiku"),
+            "T2": ("tw-builder-t2", "sonnet"), "T3": ("tw-builder-t3", "opus")}
+
+
+def builder(step: dict) -> tuple[str, str]:
+    """(agent name, model) for a step; a step with no or a bad tier gets T3."""
+    return BUILDERS.get(str(step.get("tier") or "T3"), BUILDERS["T3"])
 
 
 class StepError(ProjectError):

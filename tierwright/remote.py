@@ -182,6 +182,43 @@ class Remote:
             err = ((r.stderr or "") + (r.stdout or "")).strip().splitlines()
             raise RemoteError(f"submit_cmd failed (rc={r.returncode}): {err[-1] if err else cmd}")
 
+    def adopt(self, name: str) -> dict | None:
+        """Track a job queued on the host by other means (its own submit script),
+        so `tw watch` and trends cover it. Reads its file from running or pending."""
+        name = name.removesuffix(".job")
+        if not NAME_RE.match(name):
+            raise RemoteError(f"bad job name {name!r}")
+        if name in self.tracked(open_only=False):
+            return self.tracked(open_only=False)[name]
+        for state, d in (("running", self.q.get("running_dir")), ("pending", self.q.get("pending_dir"))):
+            if not d:
+                continue
+            f = f"{_rpath(d)}/{shlex.quote(name)}.job"
+            r = self.ssh(f"test -f {f} && stat -c %Y {f} && cat {f}")
+            if r.returncode == 0 and r.stdout:
+                mtime, _, text = r.stdout.partition("\n")
+                if self._offset() is None:
+                    self.offset_f.write_text(str(self._ledger_size()))
+                keep = self.dir / f"{name}.job"
+                keep.write_text(text)
+                rec = {"job": name, "state": state, "submitted": now(), "src": str(keep), "adopted": True}
+                if state == "running":
+                    rec["start"] = float(_int(mtime.strip(), now()))
+                self._backfill(name)
+                self._save(rec)
+                events.emit(self.p, "adopt", name, host=self.host, state=state)
+                return rec
+        return None
+
+    def _backfill(self, name: str, n: int = 5000) -> None:
+        """An adopted job's ledger lines so far (by name or gq tag) into its local log."""
+        tag = "gq-" + name.replace("_", "-")
+        rx = f"(^|[^A-Za-z0-9_-])({re.escape(name)}|{re.escape(tag)})([^A-Za-z0-9_-]|$)"
+        r = self.ssh(f"grep -a -E {shlex.quote(rx)} {_rpath(self.q['ledger'])} | tail -n {n}; true")
+        if r.stdout:
+            with open(self.p.logs / f"{name}.log", "a") as f:
+                f.write(r.stdout if r.stdout.endswith("\n") else r.stdout + "\n")
+
     def stop(self, name: str) -> bool:
         if name not in self.tracked():
             return False
@@ -374,13 +411,16 @@ def _ext(cfg: dict) -> dict:
     return config.contract_ext(cfg)
 
 
-def run(p: Project, cfg: dict, once: bool = True, on_end=None) -> list[dict]:
-    """`tw queue run` for an ssh queue: push, pull, dispatch. Never runs a job here."""
+def run(p: Project, cfg: dict, once: bool = True, on_end=None, on_tick=None) -> list[dict]:
+    """`tw queue run` for an ssh queue: push, pull, read running jobs' trends,
+    dispatch, check watches, tune. Never runs a job here."""
+    from . import trend, tune, watch
     r = Remote(p, cfg)
     ended = []
     while True:
         r.push_local()
         evs = r.pull()
+        trends = trend.ingest(p, cfg, r)
         ends = [e for e in evs if e["kind"] == "end"]
         ended += ends
         if on_end:
@@ -388,6 +428,12 @@ def run(p: Project, cfg: dict, once: bool = True, on_end=None) -> list[dict]:
                 on_end(json.loads((p.q("done") / f"{e['job']}.json").read_text()))
             if not ends:
                 on_end(None)
+        fired = watch.check(p, cfg)
+        tuned = tune.scan(p, cfg, r)
+        if any(p.q("pending").glob("*.job")):
+            r.push_local()      # a resubmit or tuned copy goes out now, not next run
+        if on_tick:
+            on_tick(trends, fired, tuned)
         if once:
             return ended
         time.sleep(cfg["queue"]["poll_s"])  # the worker waits; agents never do

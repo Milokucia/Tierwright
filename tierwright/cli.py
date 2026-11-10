@@ -14,7 +14,8 @@
   tw rule list | add --name .. --re .. --action .. --class .. --incident .. [--job J] | backtest ...
   tw ask ROLE [FILE|-]                            call a role through the router (JSON in, JSON out)
   tw route [ROLE]                                 which tier / backend / model each role resolves to
-  tw spend                                        model spend by role, tier, backend
+  tw spend [--days N]                             model spend by role / tier / backend + Claude Code agent tokens
+  tw watch JOB --until 'success>=0.9|stalled|ended'   the dispatcher checks it each run; returns at once
   tw ledger [dnr] [-n N]                          recent ledger lines, or the do-not-repeat list
   tw mine [--days N] | mine apply ID [--force]    build the infrastructure agents repeat most
   tw tool [NAME]                                  list / run mined tools
@@ -44,6 +45,10 @@ def _cfg(p):
 
 def cmd_init(a):
     from . import init
+    if a.templates:
+        added = init.templates(_p())
+        print("added: " + (", ".join(added) if added else "nothing (all present)"))
+        return 0
     r = init.run(".", a.backend, a.per_day, a.per_goal, a.goal, a.done or None,
                  probe=not a.no_probe, force=a.force,
                  interactive=None if not a.yes else False, lite=a.lite)
@@ -79,6 +84,8 @@ def cmd_step(a):
         if not s:
             print("no open step: `tw adopt` to plan, or `tw done` if all passed")
             return 1
+        agent, model = steps.builder(s)
+        print(f"# builder: {agent} ({model}, step tier {s.get('tier') or 'T3'})")
         print(Path(s["_file"]).read_text())
         return 0
     r = steps.check(p, a.id)
@@ -131,10 +138,12 @@ def cmd_submit(a):
     return 0
 
 
-def _on_end(p, cfg):
-    from . import dispatch
+def _on_end(p, cfg, local=False):
+    from . import dispatch, trend
 
     def f(meta):
+        if local:
+            trend.ingest(p, cfg)
         for d in dispatch.poll(p, cfg):
             print(f"[dispatch] {d['job']}: {d['action']} ({d.get('rule') or d['class']}) -> {d.get('applied')}")
         if meta:
@@ -158,15 +167,28 @@ def cmd_queue(a):
         return 0 if ok else 1
     if ssh:
         from . import remote
-        remote.run(p, cfg, once=not a.watch, on_end=_on_end(p, cfg))
+        remote.run(p, cfg, once=not a.watch, on_end=_on_end(p, cfg), on_tick=_on_tick)
         open_ = remote.Remote(p, cfg).tracked()
         if open_:
             print(f"on {cfg['queue']['host']}: " + ", ".join(f"{j} ({r['state']})" for j, r in open_.items()))
         else:
             print(f"on {cfg['queue']['host']}: no open jobs")
         return 0
-    jobqueue.run(p, once=not a.watch, default_timeout=cfg["limits"]["job_timeout_s"], on_end=_on_end(p, cfg))
+    jobqueue.run(p, once=not a.watch, default_timeout=cfg["limits"]["job_timeout_s"],
+                 on_end=_on_end(p, cfg, local=True))
+    from . import trend, tune, watch
+    _on_tick(trend.ingest(p, cfg), watch.check(p, cfg), tune.scan(p, cfg))
     return 0
+
+
+def _on_tick(trends, fired, tuned):
+    from . import trend
+    for j, tr in trends.items():
+        print("[trend] " + trend.line(j, tr))
+    for w in fired:
+        print(f"[watch] {w['job']}: {w['fired']}" + (" (pushed)" if w["pushed"] else ""))
+    for t in tuned:
+        print(f"[tune] {t}")
 
 
 def cmd_dispatch(a):
@@ -253,12 +275,55 @@ def cmd_route(a):
 
 
 def cmd_spend(a):
-    from . import router
-    sm = router.summary(_p())
-    if not sm:
-        print("no model calls yet")
-    for k, v in sorted(sm.items(), key=lambda kv: -kv[1]["cost_usd"]):
-        print(f"{k:34} {v['calls']:4} calls  ${v['cost_usd']:.4f}  in {v['in']}  out {v['out']}  rejected {v['rejected']}")
+    from . import config, mine, router, usage
+    from .project import Project, ProjectError, find_root
+    try:
+        p = Project(find_root()).ensure()
+        pricing = _cfg(p).get("pricing")
+        sm = router.summary(p)
+        if not sm:
+            print("no model calls yet")
+        for k, v in sorted(sm.items(), key=lambda kv: -kv[1]["cost_usd"]):
+            print(f"{k:34} {v['calls']:4} calls  ${v['cost_usd']:.4f}  in {v['in']}  out {v['out']}  "
+                  f"rejected {v['rejected']}")
+        root = p.root
+    except ProjectError:
+        pricing, root = config.DEFAULTS["pricing"], Path.cwd().resolve()
+    if a.no_agents:
+        return 0
+    dirs = [Path(x) for x in a.transcripts] if a.transcripts else [mine.transcript_dir(root)]
+    stats: dict = {}
+    for d in dirs:
+        for k, v in usage.scan(d, a.days, pricing, main=not a.subagents_only).items():
+            s = stats.setdefault(k, {kk: 0 for kk in v})
+            for kk, vv in v.items():
+                s[kk] += vv
+    print("\n".join(usage.lines(stats)))
+    return 0
+
+
+def cmd_watch(a):
+    from . import watch
+    p = _p()
+    if not a.job:
+        w = watch.load(p)
+        for j, conds in w.items():
+            print(f"{j}: until {' ; '.join(conds)}")
+        if not w:
+            print("no watches")
+        return 0
+    if a.clear:
+        w = watch.load(p)
+        ok = w.pop(a.job, None) is not None
+        watch._save(p, w)
+        print("cleared" if ok else f"no watch on {a.job}")
+        return 0 if ok else 1
+    if not a.until:
+        print("tw watch JOB --until 'success>=0.9|stalled|ended'")
+        return 2
+    r = watch.add(p, _cfg(p), a.job, a.until)
+    print(f"watching {r['job']} until {r['until']}: `tw queue run` checks it each run "
+          "(attention file + Pushover when it fires). End your turn.")
     return 0
 
 
@@ -335,6 +400,8 @@ def build() -> argparse.ArgumentParser:
     s.add_argument("--yes", "-y", action="store_true", help="never prompt")
     s.add_argument("--lite", action="store_true",
                    help="no job contracts; plain-language checks (file:, words:, contains:, review:)")
+    s.add_argument("--templates", action="store_true",
+                   help="existing project: add missing subagents, slash commands and role prompts only")
     s.set_defaults(f=cmd_init)
 
     for name in ("adopt", "plan"):
@@ -397,7 +464,18 @@ def build() -> argparse.ArgumentParser:
     s.add_argument("role", nargs="?")
     s.set_defaults(f=cmd_route)
 
-    sp.add_parser("spend", help="model spend by role / tier / backend").set_defaults(f=cmd_spend)
+    s = sp.add_parser("spend", help="model spend by role / tier / backend, plus Claude Code agent use")
+    s.add_argument("--days", type=float, default=7, help="agent usage window (default 7)")
+    s.add_argument("--subagents-only", action="store_true", help="leave out main sessions")
+    s.add_argument("--no-agents", action="store_true", help="skip the transcript scan")
+    s.add_argument("--transcripts", nargs="*", help="transcript dirs (default: this project's)")
+    s.set_defaults(f=cmd_spend)
+
+    s = sp.add_parser("watch", help="register a condition the dispatcher checks; returns at once")
+    s.add_argument("job", nargs="?")
+    s.add_argument("--until", help="e.g. 'success>=0.9|stalled|ended'")
+    s.add_argument("--clear", action="store_true")
+    s.set_defaults(f=cmd_watch)
 
     s = sp.add_parser("ledger", help="recent ledger lines, or `dnr` for do-not-repeat")
     s.add_argument("what", nargs="?", choices=["dnr"])

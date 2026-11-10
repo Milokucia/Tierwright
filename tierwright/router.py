@@ -12,7 +12,7 @@
 4. Validate: schema, then the caller's `validate(output) -> [errors]`. A
    failure is retried once on the same tier with the errors appended; after
    `escalate_after_failures` failures the call moves one tier up (T1 -> T2 ->
-   T3) and the escalation is a ledger line.
+   T3, never past `max_tier`) and the escalation is a ledger line.
 5. Every attempt is a run record: role, tier, backend, model, tokens, cost,
    outcome. Cost per role and tier is what later downgrades are judged on.
 """
@@ -113,7 +113,7 @@ def _pick_backend(p: Project, cfg: dict, r: dict) -> str:
 
 
 def call(p: Project, cfg: dict, role: str, payload, validate=None, tools=(), cwd=None,
-         tier: str | None = None):
+         tier: str | None = None, max_tier: str | None = None):
     p.ensure()
     r = config.role(cfg, role)
     if tier:
@@ -156,6 +156,8 @@ def call(p: Project, cfg: dict, role: str, payload, validate=None, tools=(), cwd
         fails_on_tier += 1
         if fails_on_tier >= limit:
             nxt = UP.get(r["tier"])
+            if nxt and max_tier and int(nxt[1]) > int(max_tier[1]):
+                nxt = None
             if not nxt:
                 ledger.record(p, "escalation", role, "fail",
                               note=f"failed on top tier: {errs[0]}")

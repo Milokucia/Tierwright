@@ -29,12 +29,13 @@ DEFAULT_ROLES = {
     "review":   {"tier": "T2"},   # milestone / code-area review
     "planner":  {"tier": "T3"},   # goal + codebase -> step ladder
     "builder":  {"tier": "T3"},   # build a step in a worktree
+    "tune":     {"tier": "T2"},   # trend + knob whitelist -> one knob change for a live run
 }
 
 # With backend "both": which backend each role uses unless overridden.
 # High-volume / batchable roles go to the API; long interactive builds to the plan.
 BOTH_SPLIT = {"triage": "api", "extract": "api", "reporter": "api", "review": "api", "judge": "api",
-              "diagnose": "subscription", "planner": "subscription", "builder": "subscription"}
+              "tune": "api", "diagnose": "subscription", "planner": "subscription", "builder": "subscription"}
 
 DEFAULTS = {
     "version": 1,
@@ -55,6 +56,14 @@ DEFAULTS = {
     "roles": {},
     "limits": {"call_timeout_s": 900, "escalate_after_failures": 2, "job_timeout_s": 3600},
     "dispatch": {"auto_diagnose": True},
+    # Live-run tuning (tune.py): off until jobs and their knob whitelists are listed.
+    "tune": {"enabled": False, "max_per_job": 2, "max_per_day": 6, "points": 20, "max_tier": "T3",
+             "triggers": {"stall": True, "plateau": {"window": 5, "eps": 0.01},
+                          "decay": {"drop": 0.1, "min_points": 2}},
+             "jobs": []},
+    # `tw watch` alerts: Pushover credentials from these env vars, else KEY=VALUE lines in file.
+    "notify": {"pushover": {"token_env": "PUSHOVER_TOKEN", "user_env": "PUSHOVER_USER",
+                            "file": "~/.pushover"}},
     "hooks": {"block_polling": True, "block_raw_logs": True, "protected_paths": []},
     # Contract dialect accepted by `tw submit` / `tw contract lint` (see contract.py).
     "contract": {"unknown": "auto", "kinds": [], "opts": {}, "flags": []},
@@ -88,6 +97,9 @@ DEFAULTS = {
             "after": "# AFTER=~/gq/marks/{job}.ok",
         },
         "header_lines": 3,        # the remote queue reads headers from this many first lines
+        # each running job's stdout on the host, read for its trend (null: ledger lines only)
+        "log_dir": "~/gq/logs",
+        "log_name": "{job}.job.log",
     },
 }
 
@@ -135,6 +147,8 @@ def validate(cfg: dict) -> list[str]:
             errs.append(f"roles.{name}.backend={rc['backend']} but backend is {cfg.get('backend')}")
     errs += _validate_contract(cfg.get("contract") or {})
     errs += _validate_queue(cfg.get("queue") or {})
+    from . import tune
+    errs += tune.validate_cfg(cfg.get("tune") or {})
     return errs
 
 
@@ -194,6 +208,10 @@ def _validate_queue(q: dict) -> list[str]:
         elif v is not None and (not isinstance(v, str) or "\n" in v
                                 or not any(f in v for f in TRANSLATE[k])):
             errs.append(f"queue.translate.{k} must be one line using {' or '.join(TRANSLATE[k])}, or null")
+    if q.get("log_dir") is not None and not isinstance(q["log_dir"], str):
+        errs.append("queue.log_dir must be a path on the remote host or null")
+    if not isinstance(q.get("log_name"), str) or "{job}" not in q["log_name"]:
+        errs.append("queue.log_name must contain {job}")
     if not isinstance(q.get("header_lines"), int) or q["header_lines"] < 1:
         errs.append("queue.header_lines must be an integer >= 1")
     return errs

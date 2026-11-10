@@ -20,6 +20,10 @@ Be short. Answer, then stop. Say what changed and what to run.
 | `brief` | job briefs for rules and models |
 | `rules` | the triage table |
 | `dispatch` | the whitelist dispatcher |
+| `trend` | running jobs' progress / value / success points, offset-tracked |
+| `watch` | `tw watch` conditions, attention files, Pushover |
+| `tune` | the `tune` role: triggers, knob checks, tuned resubmits |
+| `usage` | Claude Code agent tokens from transcripts (`tw spend`) |
 | `router` | tiers, budgets and escalation |
 | `backends` | subscription, api and fake backends |
 | `schemas` | role output schemas |

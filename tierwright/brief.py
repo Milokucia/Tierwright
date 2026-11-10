@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 import re
 
-from . import ledger
+from . import ledger, trend
 from .project import Project, clip, write_json
 
 ERR_RE = re.compile(r"(Traceback|Error|Exception|FAILED|FATAL|panic:|Killed|"
@@ -17,7 +17,11 @@ MAX_CHARS = 8000
 def build(p: Project, job: str, tail: int = 30) -> dict:
     meta_f = p.q("done") / f"{job}.json"
     if not meta_f.exists():
-        raise FileNotFoundError(f"no finished job {job!r}")
+        tr = trend.compact(p, job)
+        if tr is None:
+            raise FileNotFoundError(f"no finished job {job!r}")
+        return {"job": job, "state": tr["state"], "trend": tr,   # still running: its trend only
+                "do_not_repeat": ledger.do_not_repeat(p, limit=10)}
     meta = json.loads(meta_f.read_text())
     errors, last = [], []
     log = meta.get("log")
@@ -42,6 +46,9 @@ def build(p: Project, job: str, tail: int = 30) -> dict:
         "prior_verdicts": prior,
         "do_not_repeat": ledger.do_not_repeat(p, limit=10),
     }
+    tr = trend.compact(p, job)
+    if tr:
+        b["trend"] = tr
     # keep it small: trim the tail first, then errors
     while len(json.dumps(b)) > MAX_CHARS and b["tail"]:
         b["tail"] = b["tail"][1:]
