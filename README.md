@@ -129,7 +129,8 @@ minutes):
   KEY=VALUE lines in `~/.pushover`; names in `notify.pushover`). A job that
   ends with no clause true fires too, so no watch outlives its job. On an ssh
   queue, a job queued by the host's own script is adopted from its running or
-  pending dir.
+  pending dir. JOB may be a glob (`tw watch 'dfp_*' --until ...`): every
+  matching job fires once, the watch stays, and the glob joins `queue.adopt`.
 - The polling guard tells an agent that tries `sleep`, `watch` or a sleep
   loop to use `tw watch` instead.
 
@@ -268,6 +269,7 @@ queue:
     timeout: '# MAX_H={hours}'  # or {minutes} / {seconds}
     after: '# AFTER=~/gq/marks/{job}.ok'
   header_lines: 3               # the box reads headers from this many first lines
+  adopt: ['dfp_*', 'imit*']     # also track jobs the box's own scripts queue (null: tune.jobs globs)
   log_dir: ~/gq/logs            # running jobs' stdout, read for trends (null: ledger lines only)
   log_name: '{job}.job.log'
 ```
@@ -286,7 +288,11 @@ queue:
   run writes. The dispatcher, the rules and `tw brief JOB` work unchanged; a
   brief's tail is the job's own ledger lines (by name or `gq-<name>` tag).
 - `tw queue stop NAME` removes a job that is still pending on the box.
-- Only jobs submitted from this project are tracked. A job ends at its `pass`
+- Jobs submitted from this project are tracked, and so are jobs whose name
+  matches a `queue.adopt` glob (default: the `tune.jobs` match patterns): a
+  ledger `GQ start NAME` line, or the job already in `running_dir`, adopts it
+  (its file is read from the box), and from then on it gets a trend, a
+  contract verdict, the dispatcher's rules and tune like any other. A job ends at its `pass`
   or `fail` line; a `stop` line before a fail makes it a contract stop. A
   `skip` line (stopped by the queue, e.g. preempted) ends it as `preempted`:
   the `preempted` rule resubmits it once, and the ledger does not count it as

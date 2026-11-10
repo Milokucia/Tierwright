@@ -16,7 +16,9 @@ PUSHOVER_TOKEN / PUSHOVER_USER are set (env, or KEY=VALUE lines in ~/.pushover).
 A job that ends with no clause true also fires ("ended; COND not met"), so a
 watch never outlives its job. On an ssh queue a job queued on the host by its
 own script (not `tw submit`) is adopted: its file is read from the running or
-pending dir, and from then on it is tracked like any other.
+pending dir, and from then on it is tracked like any other. JOB may be a glob
+('dfp_*'): each matching job fires once and the watch stays; on an ssh queue
+the glob also joins queue.adopt.
 """
 
 from __future__ import annotations
@@ -78,9 +80,35 @@ def known(p: Project, cfg: dict, job: str) -> bool:
                for part in ("pending", "running", "done") for ext in ("job", "json"))
 
 
+GLOB_CH = set("*?[")
+GLOB_RE = re.compile(r"^[A-Za-z0-9_.*?\[\]!-]+$")
+
+
+def is_glob(s: str) -> bool:
+    return bool(GLOB_CH & set(s))
+
+
+def globs(p: Project) -> list[str]:
+    return [k for k in load(p) if not k.startswith("__") and is_glob(k)]
+
+
 def add(p: Project, cfg: dict, job: str, cond: str) -> dict:
     parse(cond)
     job = job.removesuffix(".job")
+    if is_glob(job):
+        # a glob: every matching job (adopted on an ssh queue) fires once; the watch stays
+        if not GLOB_RE.match(job):
+            raise WatchError(f"bad job glob {job!r}")
+        w = load(p)
+        w.setdefault(job, [])
+        if cond not in w[job]:
+            w[job].append(cond)
+        w.setdefault("__since__", {})[job] = now()
+        _save(p, w)
+        if (cfg.get("queue") or {}).get("backend") == "ssh":
+            from . import remote
+            remote.Remote(p, cfg).adopt_running()
+        return {"job": job, "until": cond}
     if not known(p, cfg, job) and (cfg.get("queue") or {}).get("backend") == "ssh":
         from . import remote
         remote.Remote(p, cfg).adopt(job)        # queued on the box by its own script
@@ -128,7 +156,31 @@ def check(p: Project, cfg: dict) -> list[dict]:
     """Fire every watch whose condition holds. Returns what fired."""
     w = load(p)
     fired, keep = [], {}
+    done_map = dict(w.get("__fired__") or {})
+    for pat, conds in w.items():
+        if pat.startswith("__") or not is_glob(pat):
+            continue
+        keep[pat] = conds
+        since = (w.get("__since__") or {}).get(pat, 0)
+        for job in _matching(p, pat, since):
+            tr = trend.compact(p, job)
+            ended = _ended(p, job, tr)
+            for cond in conds:
+                k = f"{pat}|{cond}"
+                if job in done_map.get(k, []):
+                    continue
+                why = holds(parse(cond), tr, ended) or (f"ended; {cond} not met" if ended else None)
+                if why:
+                    fired.append(fire(p, cfg, job, cond, why, tr))
+                    done_map.setdefault(k, []).append(job)
+    for k in ("__since__",):
+        if k in w:
+            keep[k] = w[k]
+    if done_map:
+        keep["__fired__"] = done_map
     for job, conds in w.items():
+        if job.startswith("__") or is_glob(job):
+            continue
         tr = trend.compact(p, job)
         ended = _ended(p, job, tr)
         left = []
@@ -145,6 +197,23 @@ def check(p: Project, cfg: dict) -> list[dict]:
     if keep != w:
         _save(p, keep)
     return fired
+
+
+def _matching(p: Project, pat: str, since: float) -> list[str]:
+    import fnmatch
+    out = []
+    for f in sorted(p.q("remote").glob("*.json")):
+        try:
+            r = json.loads(f.read_text())
+        except json.JSONDecodeError:
+            continue
+        if fnmatch.fnmatch(r.get("job", ""), pat) and (r.get("end") or now()) >= since:
+            out.append(r["job"])
+    for part in ("running", "done"):
+        for f in sorted(p.q(part).glob("*.job")):
+            if fnmatch.fnmatch(f.stem, pat) and f.stem not in out and f.stat().st_mtime >= since - 1:
+                out.append(f.stem)
+    return out
 
 
 def fire(p: Project, cfg: dict, job: str, cond: str, why: str, tr: dict | None) -> dict:

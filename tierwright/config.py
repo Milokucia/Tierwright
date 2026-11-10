@@ -98,6 +98,9 @@ DEFAULTS = {
         },
         "header_lines": 3,        # the remote queue reads headers from this many first lines
         # each running job's stdout on the host, read for its trend (null: ledger lines only)
+        # job-name globs tracked without `tw submit` (jobs the host's own scripts queue):
+        # null = the tune.jobs match patterns; [] = none
+        "adopt": None,
         "log_dir": "~/gq/logs",
         "log_name": "{job}.job.log",
     },
@@ -208,6 +211,9 @@ def _validate_queue(q: dict) -> list[str]:
         elif v is not None and (not isinstance(v, str) or "\n" in v
                                 or not any(f in v for f in TRANSLATE[k])):
             errs.append(f"queue.translate.{k} must be one line using {' or '.join(TRANSLATE[k])}, or null")
+    ad = q.get("adopt")
+    if ad is not None and (not isinstance(ad, list) or not all(isinstance(x, str) and x.strip() for x in ad)):
+        errs.append("queue.adopt must be a list of job-name globs, or null")
     if q.get("log_dir") is not None and not isinstance(q["log_dir"], str):
         errs.append("queue.log_dir must be a path on the remote host or null")
     if not isinstance(q.get("log_name"), str) or "{job}" not in q["log_name"]:

@@ -306,7 +306,7 @@ def cmd_watch(a):
     from . import watch
     p = _p()
     if not a.job:
-        w = watch.load(p)
+        w = {k: v for k, v in watch.load(p).items() if not k.startswith("__")}
         for j, conds in w.items():
             print(f"{j}: until {' ; '.join(conds)}")
         if not w:

@@ -182,15 +182,45 @@ class Remote:
             err = ((r.stderr or "") + (r.stdout or "")).strip().splitlines()
             raise RemoteError(f"submit_cmd failed (rc={r.returncode}): {err[-1] if err else cmd}")
 
-    def adopt(self, name: str) -> dict | None:
+    def adopt_globs(self) -> list[str]:
+        """Job-name globs tracked without `tw submit`: queue.adopt (default: the
+        tune.jobs match patterns), plus every glob a `tw watch` names."""
+        from . import watch
+        g = self.q.get("adopt")
+        if g is None:
+            g = [j["match"] for j in (self.cfg.get("tune") or {}).get("jobs") or [] if j.get("match")]
+        return list(dict.fromkeys(list(g) + watch.globs(self.p)))
+
+    def wants(self, name: str, globs: list[str] | None = None) -> bool:
+        import fnmatch
+        return any(fnmatch.fnmatch(name, g) for g in (self.adopt_globs() if globs is None else globs))
+
+    def adopt_running(self) -> list[str]:
+        """Adopt every job running on the host whose name matches an adopt glob."""
+        globs = self.adopt_globs()
+        if not globs or not self.q.get("running_dir"):
+            return []
+        r = self.ssh(f"ls {_rpath(self.q['running_dir'])} 2>/dev/null; true")
+        have = self.tracked(open_only=False)
+        out = []
+        for f in (r.stdout or "").split():
+            name = f.removesuffix(".job")
+            if f.endswith(".job") and NAME_RE.match(name) and name not in have and self.wants(name, globs):
+                if self.adopt(name):
+                    out.append(name)
+        return out
+
+    def adopt(self, name: str, start: float | None = None, backfill: bool = True) -> dict | None:
         """Track a job queued on the host by other means (its own submit script),
-        so `tw watch` and trends cover it. Reads its file from running or pending."""
+        so `tw watch`, trends, the dispatcher and tune cover it. Reads its file
+        from the running, pending or done dir."""
         name = name.removesuffix(".job")
         if not NAME_RE.match(name):
             raise RemoteError(f"bad job name {name!r}")
         if name in self.tracked(open_only=False):
             return self.tracked(open_only=False)[name]
-        for state, d in (("running", self.q.get("running_dir")), ("pending", self.q.get("pending_dir"))):
+        for state, d in (("running", self.q.get("running_dir")), ("pending", self.q.get("pending_dir")),
+                         ("running", self.q.get("done_dir"))):
             if not d:
                 continue
             f = f"{_rpath(d)}/{shlex.quote(name)}.job"
@@ -203,8 +233,9 @@ class Remote:
                 keep.write_text(text)
                 rec = {"job": name, "state": state, "submitted": now(), "src": str(keep), "adopted": True}
                 if state == "running":
-                    rec["start"] = float(_int(mtime.strip(), now()))
-                self._backfill(name)
+                    rec["start"] = start or float(_int(mtime.strip(), now()))
+                if backfill:
+                    self._backfill(name)
                 self._save(rec)
                 events.emit(self.p, "adopt", name, host=self.host, state=state)
                 return rec
@@ -281,13 +312,27 @@ class Remote:
 
     def _apply(self, lines: list[str]) -> list[dict]:
         jobs = self.tracked()
-        if not jobs:
+        globs = self.adopt_globs()
+        if not jobs and not globs:
             return []
         out = []
-        # the job's name, or the gq-style tag `gq-<name with - for _>`
-        pats = {j: re.compile(rf"(?<![\w-])(?:{re.escape(j)}|gq-{re.escape(j.replace('_', '-'))})(?![\w-])")
-                for j in jobs}
+
+        def pat(j):   # the job's name, or the gq-style tag `gq-<name with - for _>`
+            return re.compile(rf"(?<![\w-])(?:{re.escape(j)}|gq-{re.escape(j.replace('_', '-'))})(?![\w-])")
+
+        pats = {j: pat(j) for j in jobs}
+        start_rx = self.ev.get("start")
+        seen = set(self.tracked(open_only=False))
         for line in lines:
+            m = start_rx.search(line) if (start_rx and globs) else None
+            if m:
+                name = m.group("job").removesuffix(".job")
+                if name not in seen and NAME_RE.match(name) and self.wants(name, globs):
+                    seen.add(name)
+                    rec = self.adopt(name, start=_ts(line) or now(), backfill=False)
+                    if rec:
+                        jobs[name] = rec
+                        pats[name] = pat(name)
             hits = [j for j, rx in pats.items() if rx.search(line)]
             if not hits:
                 continue
@@ -420,6 +465,7 @@ def run(p: Project, cfg: dict, once: bool = True, on_end=None, on_tick=None) -> 
     while True:
         r.push_local()
         evs = r.pull()
+        r.adopt_running()       # started before this project tracked them
         trends = trend.ingest(p, cfg, r)
         ends = [e for e in evs if e["kind"] == "end"]
         ended += ends

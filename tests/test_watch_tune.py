@@ -389,3 +389,55 @@ def test_local_queue_trend_reaches_the_brief(proj, cfg):
     assert cli.main(["queue", "run"]) == 0
     b = brief.build(proj, "loc")
     assert b["trend"]["series"]["loss"]["last"] == 0.4 and b["trend"]["state"] == "ended"
+
+
+# ── adopt by glob ───────────────────────────────────────────────────────────
+def test_start_lines_matching_adopt_globs_are_tracked_others_not(proj, box):
+    cfg = setup(proj, queue={"backend": "ssh", "host": "ubuntu@fakebox", "adopt": ["dfp_*"]})
+    remote.Remote(proj, cfg).pull()                                   # sets the offset
+    (box / "gq/running/dfp_a.job").write_text(JOB)
+    (box / "gq/running/other_b.job").write_text(JOB)
+    add(box, "fill_ledger.txt", "2026-11-10 10:00:00 GQ start dfp_a.job on GPU 0",
+        "2026-11-10 10:00:00 GQ start other_b.job on GPU 1",
+        "2026-11-10 10:10:00 EVAL dfp_a eval 50%")
+    got = tick(proj, cfg)
+    tr = remote.Remote(proj, cfg).tracked()
+    assert "dfp_a" in tr and "other_b" not in tr
+    assert got["trends"]["dfp_a"]["success"] == 0.5
+    add(box, "fill_ledger.txt", "2026-11-10 11:00:00 GQ CONTRACT FAIL dfp_a.job rc=0: success ev: 0.5 < 0.9")
+    got = tick(proj, cfg)
+    assert got["dispatch"][0]["job"] == "dfp_a"                       # verdict reaches the rules
+    assert json.loads((proj.q("done") / "dfp_a.json").read_text())["contract"]["pass"] is False
+
+
+def test_jobs_already_running_are_adopted_and_default_globs_come_from_tune(proj, box):
+    cfg = setup(proj, TUNE)                                           # tune match imit*, no queue.adopt
+    assert remote.Remote(proj, cfg).adopt_globs() == ["imit*"]
+    remote.Remote(proj, cfg).pull()
+    (box / "gq/running/imit_live.job").write_text(JOB)
+    (box / "gq/running/zzz.job").write_text(JOB)
+    tick(proj, cfg)
+    assert set(remote.Remote(proj, cfg).tracked()) == {"imit_live"}
+
+
+def test_bad_adopt_config_is_rejected(proj):
+    with pytest.raises(config.ConfigError, match="queue.adopt"):
+        setup(proj, queue={"backend": "ssh", "host": "ubuntu@fakebox", "adopt": "dfp_*"})
+
+
+def test_watch_accepts_a_glob_and_fires_per_job(proj, box, monkeypatch):
+    monkeypatch.setattr(watch, "_pushover_creds", lambda cfg: {})
+    cfg = setup(proj, queue={"backend": "ssh", "host": "ubuntu@fakebox", "adopt": []})
+    remote.Remote(proj, cfg).pull()
+    (box / "gq/running/dfp_x.job").write_text(JOB)
+    with pytest.raises(watch.WatchError, match="bad job glob"):
+        watch.add(proj, cfg, "dfp_*;rm", "ended")
+    assert cli.main(["watch", "dfp_*", "--until", "success>=0.9|ended"]) == 0
+    assert "dfp_x" in remote.Remote(proj, cfg).tracked()              # running match adopted now
+    add(box, "fill_ledger.txt", "2026-11-10 10:00:00 GQ start dfp_y.job on GPU 2",
+        "2026-11-10 10:10:00 EVAL dfp_x eval 95%")
+    (box / "gq/running/dfp_y.job").write_text(JOB)
+    fired = tick(proj, cfg)["fired"]
+    assert [f["job"] for f in fired] == ["dfp_x"]
+    assert "dfp_y" in remote.Remote(proj, cfg).tracked()              # the glob joins adopt
+    assert tick(proj, cfg)["fired"] == [] and "dfp_*" in watch.load(proj)
