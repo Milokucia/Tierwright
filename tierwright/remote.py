@@ -160,7 +160,9 @@ class Remote:
                 raise RemoteError(f"{name}.job is already pending, running or done on {self.host}: "
                                   "pick another --name")
             self.scp(str(src), f"{self.q['pending_dir'].rstrip('/')}/{name}.job")
-        self._save({"job": name, "state": "pending", "submitted": now(), "src": str(src)})
+        keep = self.dir / f"{name}.job"       # the job as sent, for its brief and a resubmit
+        keep.write_text(text)
+        self._save({"job": name, "state": "pending", "submitted": now(), "src": str(keep)})
         events.emit(self.p, "submit", name, host=self.host)
         return name, warn
 
