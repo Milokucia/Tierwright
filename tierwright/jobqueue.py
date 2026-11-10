@@ -30,12 +30,13 @@ class QueueError(ProjectError):
     pass
 
 
-def submit(p: Project, src: str | Path, name: str | None = None, require_contract: bool = True) -> str:
+def submit(p: Project, src: str | Path, name: str | None = None, require_contract: bool = True,
+           ext: dict | None = None) -> str:
     p.ensure()
     src = Path(src)
     text = src.read_text()
-    contract.parse(text)  # raises ContractError with the line number
-    if require_contract and not contract.has_contract(text):
+    contract.parse(text, ext)  # raises ContractError with the line number
+    if require_contract and not contract.has_contract(text, ext):
         raise QueueError(f"{src} has no output contract (#@ lines). Every job states what its "
                          "outputs must look like; see `tw contract --help`.")
     name = name or src.stem
@@ -177,7 +178,15 @@ def stop(p: Project, name: str) -> bool:
 
 
 def counts(p: Project) -> dict:
-    return {part: len(list(p.q(part).glob("*.job"))) for part in ("pending", "running", "done")}
+    c = {part: len(list(p.q(part).glob("*.job"))) for part in ("pending", "running", "done")}
+    rdir = p.q("remote")
+    if rdir.exists():  # jobs on an ssh queue (remote.py)
+        import json
+        for f in rdir.glob("*.json"):
+            st = json.loads(f.read_text()).get("state")
+            if st in ("pending", "running"):
+                c[st] += 1
+    return c
 
 
 def last_ends(p: Project, n: int = 5) -> list[dict]:

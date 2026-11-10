@@ -15,6 +15,7 @@ Be short. Answer, then stop. Say what changed and what to run.
 |---|---|
 | `contract` | output contracts |
 | `jobqueue` | the job queue |
+| `remote` | ssh queue backend: submit to a box, read its ledger into events |
 | `events` | the event log |
 | `brief` | job briefs for rules and models |
 | `rules` | the triage table |

@@ -6,8 +6,8 @@
   tw step show|list|check [ID]                    the ladder; check runs the open step's gate
   tw done                                         run the goal's done bar
   tw check 'CHECK'                                run one check (file:, words:, contains:, lacks:, review:, run:)
-  tw submit JOB [--name N]                        queue a job (needs an output contract)
-  tw queue run [--watch] | stop NAME              run jobs; the dispatcher acts on each end
+  tw submit JOB [--name N] [-- ARGS]              queue a job (needs an output contract); ARGS go to queue.submit_cmd
+  tw queue run [--watch] | stop NAME              run jobs (ssh queue: pull verdicts); the dispatcher acts on each end
   tw dispatch                                     process unread events now
   tw brief JOB                                    the compact JSON a rule or model reads
   tw contract lint FILE... | --help               check contract syntax
@@ -110,9 +110,24 @@ def cmd_check(a):
 
 
 def cmd_submit(a):
-    from . import jobqueue
+    from . import config, jobqueue
     p = _p()
-    print("queued", jobqueue.submit(p, a.file, a.name, require_contract=_cfg(p)["mode"] != "lite"))
+    cfg = _cfg(p)
+    need = cfg["mode"] != "lite"
+    if cfg["queue"]["backend"] == "ssh":
+        from . import remote
+        name, warn = remote.Remote(p, cfg).submit(a.file, a.name, a.extra, require_contract=need)
+        for w in warn[:8]:
+            print(f"warning (the remote verifier decides): {w}", file=sys.stderr)
+        if len(warn) > 8:
+            print(f"warning: {len(warn) - 8} more", file=sys.stderr)
+        print(f"queued {name} on {cfg['queue']['host']}")
+        return 0
+    if a.extra:
+        print("tw: extra submit arguments need queue.backend: ssh with queue.submit_cmd", file=sys.stderr)
+        return 2
+    print("queued", jobqueue.submit(p, a.file, a.name, require_contract=need,
+                                    ext=config.contract_ext(cfg)))
     return 0
 
 
@@ -132,10 +147,24 @@ def cmd_queue(a):
     from . import jobqueue
     p = _p()
     cfg = _cfg(p)
+    ssh = cfg["queue"]["backend"] == "ssh"
     if a.action == "stop":
-        ok = jobqueue.stop(p, a.name)
+        if ssh:
+            from . import remote
+            ok = remote.Remote(p, cfg).stop(a.name)
+        else:
+            ok = jobqueue.stop(p, a.name)
         print("stopped" if ok else f"{a.name} is not pending")
         return 0 if ok else 1
+    if ssh:
+        from . import remote
+        remote.run(p, cfg, once=not a.watch, on_end=_on_end(p, cfg))
+        open_ = remote.Remote(p, cfg).tracked()
+        if open_:
+            print(f"on {cfg['queue']['host']}: " + ", ".join(f"{j} ({r['state']})" for j, r in open_.items()))
+        else:
+            print(f"on {cfg['queue']['host']}: no open jobs")
+        return 0
     jobqueue.run(p, once=not a.watch, default_timeout=cfg["limits"]["job_timeout_s"], on_end=_on_end(p, cfg))
     return 0
 
@@ -157,10 +186,19 @@ def cmd_contract(a):
     if not a.files:
         print(contract.__doc__)
         return 0
+    ext = None
+    try:
+        from . import config
+        ext = config.contract_ext(_cfg(_p()))
+    except Exception:
+        pass                # outside a project: the built-in dialect
     bad = 0
     for f in a.files:
         try:
-            cs = contract.parse(Path(f).read_text())
+            warn: list = []
+            cs = contract.parse(Path(f).read_text(), ext, warn)
+            for w in warn:
+                print(f"{f}: warning: {w}")
             real = [c for c in cs if c.kind not in ("log", "after", "mode")]
             print(f"{f}: {len(real)} check(s)" + ("" if real else "  NO CONTRACT"))
             bad += not real
@@ -392,7 +430,13 @@ def main(argv: list[str] | None = None) -> int:
     from .project import ProjectError
     from .contract import ContractError
     from .router import BudgetExceeded, CallFailed
+    argv = list(sys.argv[1:] if argv is None else argv)
+    extra = []
+    if argv[:1] == ["submit"] and "--" in argv:   # tw submit JOB [--name N] -- ARGS for submit_cmd
+        i = argv.index("--")
+        argv, extra = argv[:i], argv[i + 1:]
     a = build().parse_args(argv)
+    a.extra = extra
     if a.cmd == "rule" and a.action in ("add", "backtest"):
         miss = [k for k in ("name", "rule_action", "cls", "incident") if not getattr(a, k)]
         if miss:

@@ -6,6 +6,8 @@ Validated on every load; a bad config fails loudly, never half-applies.
 from __future__ import annotations
 
 import copy
+import os
+import re
 from pathlib import Path
 
 import yaml
@@ -54,7 +56,34 @@ DEFAULTS = {
     "limits": {"call_timeout_s": 900, "escalate_after_failures": 2, "job_timeout_s": 3600},
     "dispatch": {"auto_diagnose": True},
     "hooks": {"block_polling": True, "block_raw_logs": True, "protected_paths": []},
+    # Contract dialect accepted by `tw submit` / `tw contract lint` (see contract.py).
+    "contract": {"unknown": "auto", "kinds": [], "opts": {}, "flags": []},
+    # Where jobs run: local (this machine) or ssh (a remote queue that runs and
+    # verifies them; see remote.py). Paths are on the remote host.
+    "queue": {
+        "backend": "local",
+        "host": None,
+        "key": None,
+        "pending_dir": "~/gq/pending",
+        "running_dir": "~/gq/running",
+        "done_dir": "~/gq/done",
+        "ledger": "~/fill_ledger.txt",
+        "submit_cmd": None,       # local command that tags, lints and copies a job instead of scp
+        "connect_timeout_s": 15,
+        "poll_s": 30,             # `tw queue run --watch` pull interval
+        # ledger line -> event; each needs a (?P<job>...) group, rc= is read from (?P<rc>...)
+        "events": {
+            "start": r"GQ start (?P<job>\S+?)(?:\.job)? on GPU (?P<gpu>\d+)",
+            "end": r"GQ end (?P<job>\S+?)(?:\.job)? rc=(?P<rc>-?\d+)",
+            "stop": r"GQ HEALTH stop (?P<job>\S+?)(?:\.job)?: (?P<detail>.*)",
+            "pass": r"GQ CONTRACT PASS (?P<job>\S+?)(?:\.job)? rc=(?P<rc>-?\d+)",
+            "fail": r"GQ CONTRACT FAIL (?P<job>\S+?)(?:\.job)? rc=(?P<rc>-?\d+): (?P<detail>.*)",
+        },
+    },
 }
+
+QUEUE_BACKENDS = ("local", "ssh")
+QUEUE_EVENTS = ("start", "end", "stop", "pass", "fail")
 
 
 def _merge(base: dict, over: dict) -> dict:
@@ -94,7 +123,66 @@ def validate(cfg: dict) -> list[str]:
             errs.append(f"roles.{name}.backend must be subscription or api")
         if rc.get("backend") and cfg.get("backend") != "both" and rc["backend"] != cfg.get("backend"):
             errs.append(f"roles.{name}.backend={rc['backend']} but backend is {cfg.get('backend')}")
+    errs += _validate_contract(cfg.get("contract") or {})
+    errs += _validate_queue(cfg.get("queue") or {})
     return errs
+
+
+def _validate_contract(c: dict) -> list[str]:
+    errs = []
+    if c.get("unknown") not in ("auto", "error", "warn"):
+        errs.append("contract.unknown must be auto, error or warn")
+    for k in ("kinds", "flags"):
+        if not isinstance(c.get(k), list) or not all(isinstance(x, str) for x in c[k]):
+            errs.append(f"contract.{k} must be a list of words")
+    o = c.get("opts")
+    if not isinstance(o, dict) or not all(isinstance(v, list) for v in o.values()):
+        errs.append("contract.opts must map a check kind to a list of option names")
+    return errs
+
+
+def _validate_queue(q: dict) -> list[str]:
+    errs = []
+    if q.get("backend") not in QUEUE_BACKENDS:
+        return [f"queue.backend must be one of {QUEUE_BACKENDS}, got {q.get('backend')!r}"]
+    for k in ("connect_timeout_s", "poll_s"):
+        if not isinstance(q.get(k), (int, float)) or q[k] <= 0:
+            errs.append(f"queue.{k} must be a number > 0")
+    if q["backend"] == "local":
+        return errs
+    host = q.get("host")
+    if not isinstance(host, str) or not re.fullmatch(r"[\w.@:\[\]-]+", host):
+        errs.append(f"queue.host must be [user@]host for backend ssh, got {host!r}")
+    if q.get("key") and not os.path.isfile(os.path.expanduser(str(q["key"]))):
+        errs.append(f"queue.key {q['key']} does not exist")
+    for k in ("pending_dir", "running_dir", "ledger"):
+        if not isinstance(q.get(k), str) or not q[k].strip():
+            errs.append(f"queue.{k} must be a path on the remote host")
+    if q.get("submit_cmd") is not None and not isinstance(q["submit_cmd"], str):
+        errs.append("queue.submit_cmd must be a command string or null")
+    ev = q.get("events") or {}
+    for k in QUEUE_EVENTS:
+        r = ev.get(k)
+        if r is None and k in ("start", "end", "stop"):
+            continue
+        try:
+            rx = re.compile(r)
+        except (re.error, TypeError) as e:
+            errs.append(f"queue.events.{k}: bad regex {r!r}: {e}")
+            continue
+        if "job" not in rx.groupindex:
+            errs.append(f"queue.events.{k} needs a (?P<job>...) group")
+    for k in set(ev) - set(QUEUE_EVENTS):
+        errs.append(f"queue.events.{k}: unknown event (one of {QUEUE_EVENTS})")
+    return errs
+
+
+def contract_ext(cfg: dict) -> dict:
+    """The `contract:` section with `unknown: auto` resolved."""
+    c = dict(cfg.get("contract") or {})
+    if c.get("unknown", "auto") == "auto":
+        c["unknown"] = "warn" if (cfg.get("queue") or {}).get("backend") == "ssh" else "error"
+    return c
 
 
 def load(p: Project) -> dict:

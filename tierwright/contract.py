@@ -26,6 +26,14 @@ environment.
 Every check takes `in=PATH` to read another file. Durations: 90s, 20m, 2h,
 bare number = seconds. A failed hard check stops the job (enforce mode, the
 default); `#@ mode warn` only records.
+
+Another verifier's contract dialect (a remote queue that enforces its own
+`#@` lines) lints through `contract:` in tierwright.yaml: `kinds`, `opts`
+({kind: [option, ...]}) and `flags` add accepted words, and `unknown: warn`
+turns any other unknown word or missing option into a warning instead of an
+error (`auto`, the default: warn with an ssh queue, error locally). Syntax
+errors (quoting, regexes, durations) are always errors. Checks the local
+verifier does not know are skipped by it.
 """
 
 from __future__ import annotations
@@ -91,7 +99,26 @@ class Check:
     line: int = 0
 
 
-def parse(text: str) -> list[Check]:
+def _ext(ext: dict | None) -> tuple[set, dict, set, bool]:
+    ext = ext or {}
+    kinds = KINDS | set(ext.get("kinds") or [])
+    opts = {k: set(v) for k, v in OPTS.items()}
+    for k, v in (ext.get("opts") or {}).items():
+        opts.setdefault(k, set()).update(v or [])
+    return kinds, opts, FLAGS | set(ext.get("flags") or []), ext.get("unknown") == "warn"
+
+
+def parse(text: str, ext: dict | None = None, warnings: list | None = None) -> list[Check]:
+    """`ext`: the `contract:` config (extra kinds / opts / flags, unknown: warn).
+    Under unknown: warn, problems a foreign verifier may accept go to `warnings`."""
+    kinds_ok, opts_ok, flags_ok, lenient = _ext(ext)
+    warnings = [] if warnings is None else warnings
+
+    def soft(msg):
+        if not lenient:
+            raise ContractError(msg)
+        warnings.append(msg)
+
     checks = []
     for i, raw in enumerate(text.splitlines(), 1):
         s = raw.strip()
@@ -104,19 +131,31 @@ def parse(text: str) -> list[Check]:
         if not toks:
             continue
         kind, rest = toks[0], toks[1:]
-        if kind not in KINDS:
-            raise ContractError(f"line {i}: unknown check {kind!r} (one of {sorted(KINDS)})")
+        if kind not in kinds_ok:
+            soft(f"line {i}: unknown check {kind!r} (one of {sorted(kinds_ok)})")
         opts, flags, pos = {}, set(), []
         for t in (rest if kind != "mode" else []):
             if "=" in t and not t.startswith("="):
                 k, v = t.split("=", 1)
-                if k not in OPTS.get(kind, set()):
-                    raise ContractError(f"line {i}: {kind} takes no option {k!r}")
+                if k not in opts_ok.get(kind, set()) and kind in kinds_ok:
+                    soft(f"line {i}: {kind} takes no option {k!r}")
                 opts[k] = v
-            elif t in FLAGS:
+            elif t in flags_ok or (kind in KINDS and pos):
+                if t not in flags_ok:
+                    soft(f"line {i}: {kind} has unknown flag {t!r}")
                 flags.add(t)
             else:
                 pos.append(t)
+        if kind not in KINDS:
+            # a check only a foreign verifier knows: syntax-check its regexes, keep it
+            for k in ("re", "until", "after"):
+                if k in opts:
+                    try:
+                        re.compile(opts[k])
+                    except re.error as e:
+                        raise ContractError(f"line {i}: bad regex {opts[k]!r}: {e}") from None
+            checks.append(Check(kind, f"{kind}:{' '.join(pos)}", " ".join(pos), opts, flags, i))
+            continue
         if kind == "mode":
             pos = rest
         if kind in ("log", "after", "timeout", "mode", "artifact", "result"):
@@ -130,7 +169,7 @@ def parse(text: str) -> list[Check]:
         for need in {"phase": ["until", "max"], "progress": ["stall"], "forbid": ["re"],
                      "value": ["re"], "success": ["re", "min"], "result": ["keys"]}.get(kind, []):
             if need not in opts:
-                raise ContractError(f"line {i}: {kind} needs {need}=")
+                soft(f"line {i}: {kind} needs {need}=")
         for k in ("re", "until"):
             if k in opts:
                 try:
@@ -148,8 +187,8 @@ def parse(text: str) -> list[Check]:
     return checks
 
 
-def has_contract(text: str) -> bool:
-    return any(c.kind not in ("after", "mode", "log") for c in parse(text))
+def has_contract(text: str, ext: dict | None = None) -> bool:
+    return any(c.kind not in ("after", "mode", "log") for c in parse(text, ext))
 
 
 def _read(path: str) -> str:
@@ -176,8 +215,8 @@ class Verifier:
     """Evaluates one job's contract. Call check() while it runs and at end."""
 
     def __init__(self, text: str, stdout_path: str, start: float, env: dict | None = None,
-                 cwd: str | None = None):
-        self.checks = parse(text)
+                 cwd: str | None = None, ext: dict | None = None):
+        self.checks = [c for c in parse(text, ext) if c.kind in KINDS]
         self.start = start
         self.cwd = cwd or os.getcwd()
         self.env = dict(os.environ if env is None else env)

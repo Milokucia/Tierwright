@@ -165,6 +165,56 @@ python train.py
 A job without a contract is refused. A job that is still running but writes
 nothing, or writes garbage, fails its contract and is stopped.
 
+## Remote GPU queue (ssh)
+
+When jobs must run on another machine (a GPU box with its own queue and its
+own contract verifier), point `queue:` in `tierwright.yaml` at it:
+
+```yaml
+queue:
+  backend: ssh                  # local (default) | ssh
+  host: ubuntu@10.0.0.5
+  key: ~/box.pem
+  pending_dir: ~/gq/pending     # jobs dropped here run in name order
+  running_dir: ~/gq/running
+  done_dir: ~/gq/done
+  ledger: ~/fill_ledger.txt     # the box's append-only result lines
+  submit_cmd: null              # or the box's own tag/lint/copy script, e.g.
+                                # "BOX={host} KEY={key} bash cloud/gq_submit.sh {file} --as {name}"
+  events:                       # ledger line -> event; each needs (?P<job>...), rc from (?P<rc>...)
+    start: 'GQ start (?P<job>\S+?)(?:\.job)? on GPU (?P<gpu>\d+)'
+    end:   'GQ end (?P<job>\S+?)(?:\.job)? rc=(?P<rc>-?\d+)'
+    stop:  'GQ HEALTH stop (?P<job>\S+?)(?:\.job)?: (?P<detail>.*)'
+    pass:  'GQ CONTRACT PASS (?P<job>\S+?)(?:\.job)? rc=(?P<rc>-?\d+)'
+    fail:  'GQ CONTRACT FAIL (?P<job>\S+?)(?:\.job)? rc=(?P<rc>-?\d+): (?P<detail>.*)'
+```
+
+- `tw submit JOB [--name N] [-- ARGS]` lints the contract here, then copies
+  the job to `pending_dir` with `scp` (refused if the name is already pending,
+  running or done there), or runs `submit_cmd` with ARGS appended.
+- `tw queue run` never runs a job here. It sends the dispatcher's resubmits
+  to the box, reads the ledger lines added since the last run (a byte offset,
+  so nothing is read twice) and writes the same `start` / `end` events a local
+  run writes. The dispatcher, the rules and `tw brief JOB` work unchanged; a
+  brief's tail is the job's own ledger lines (by name or `gq-<name>` tag).
+- `tw queue stop NAME` removes a job that is still pending on the box.
+- Only jobs submitted from this project are tracked. A job ends at its `pass`
+  or `fail` line; a `stop` line before a fail makes it a contract stop.
+- An unreachable host or a bad `queue:` block fails with one clear line.
+  It shells out to `ssh` / `scp`; nothing new to install.
+
+The box enforces its own `#@` dialect, so with an ssh queue local lint warns
+on words it does not know (`hard`, `pct`, `ref=`, ...) instead of refusing the
+job. Declare them to silence the warnings, or set `unknown: error`:
+
+```yaml
+contract:
+  unknown: auto                 # auto = warn with an ssh queue, error locally
+  kinds: [tag, var]
+  flags: [hard, pct]
+  opts: {success: [ref, tol, agg], artifact: [at, if]}
+```
+
 ## Guardrails (Claude Code hooks, installed by `tw init`)
 
 | Trap | Guard |
@@ -201,7 +251,7 @@ It also installs the subagents `tw-status` (Haiku), `tw-ops` (Sonnet) and
 
 ```
 tw init [--lite] / adopt / plan / step show|list|check / done / check 'CHECK'
-tw submit JOB / queue run [--watch] / queue stop NAME / dispatch / brief JOB
+tw submit JOB [-- ARGS] / queue run [--watch] / queue stop NAME / dispatch / brief JOB
 tw contract [lint FILE...]   tw rule list|add|backtest   tw ask ROLE [FILE]
 tw route [ROLE]   tw spend   tw ledger [dnr]   tw status
 tw mine [apply ID]   tw tool [NAME]   tw digest PATH
@@ -213,7 +263,7 @@ A walk-through with no model calls is in `examples/hello/`.
 
 | Path | Committed | What |
 |---|---|---|
-| `tierwright.yaml` | yes | backend, budgets, tiers, role overrides, hooks |
+| `tierwright.yaml` | yes | backend, budgets, tiers, role overrides, hooks, queue, contract dialect |
 | `goal.yaml` | yes | the goal and its done bar |
 | `steps/` | yes | the step ladder |
 | `.tierwright/ledger.jsonl` | yes | every attempt and verdict |
@@ -237,7 +287,7 @@ behind each.
 - Moving a role down a tier after replaying recorded briefs on the cheaper
   model.
 - Batch API for reviews.
-- Remote or GPU queue backends.
+- Queue backends other than local and ssh (Slurm, Kubernetes).
 - A builder that runs in a git worktree.
 - Mined tools that take arguments, for commands that differ only by one
   value.
