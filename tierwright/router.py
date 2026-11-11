@@ -83,9 +83,18 @@ def _day_start() -> float:
     return time.mktime(time.struct_time((t.tm_year, t.tm_mon, t.tm_mday, 0, 0, 0, 0, 0, 0))) - time.timezone
 
 
+def _month_start() -> float:
+    t = time.gmtime()
+    return time.mktime(time.struct_time((t.tm_year, t.tm_mon, 1, 0, 0, 0, 0, 0, 0))) - time.timezone
+
+
 def budget_left(p: Project, cfg: dict, backend: str) -> str | None:
     """None if `backend` may spend; else why not."""
     b = cfg["budgets"]
+    if b.get("per_month_usd") is not None:       # optional: calendar month, UTC
+        month = spend(p, backend, _month_start())
+        if month >= b["per_month_usd"]:
+            return f"{backend} spent ${month:.2f} this month of ${b['per_month_usd']}"
     day = spend(p, backend, _day_start())
     goal = spend(p, backend, _goal_start(p))
     if day >= b["per_day_usd"]:

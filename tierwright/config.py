@@ -137,6 +137,9 @@ def validate(cfg: dict) -> list[str]:
         v = cfg.get("budgets", {}).get(k)
         if not isinstance(v, (int, float)) or v < 0:
             errs.append(f"budgets.{k} must be a number >= 0")
+    m = cfg.get("budgets", {}).get("per_month_usd")
+    if m is not None and (not isinstance(m, (int, float)) or m < 0):
+        errs.append("budgets.per_month_usd must be a number >= 0")
     for t in ("T1", "T2", "T3"):
         tc = cfg.get("tiers", {}).get(t)
         if not tc or not tc.get("model"):
