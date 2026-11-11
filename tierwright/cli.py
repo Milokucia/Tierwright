@@ -46,7 +46,7 @@ def _cfg(p):
 def cmd_init(a):
     from . import init
     if a.templates:
-        added = init.templates(_p())
+        added = init.templates(_p(), force_agents=a.force)
         print("added: " + (", ".join(added) if added else "nothing (all present)"))
         return 0
     r = init.run(".", a.backend, a.per_day, a.per_goal, a.goal, a.done or None,
@@ -401,7 +401,8 @@ def build() -> argparse.ArgumentParser:
     s.add_argument("--lite", action="store_true",
                    help="no job contracts; plain-language checks (file:, words:, contains:, review:)")
     s.add_argument("--templates", action="store_true",
-                   help="existing project: add missing subagents, slash commands and role prompts only")
+                   help="existing project: add missing subagents, slash commands and role prompts only "
+                   "(with --force: also rewrite tw-builder*/tw-task* agents)")
     s.set_defaults(f=cmd_init)
 
     for name in ("adopt", "plan"):

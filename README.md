@@ -350,9 +350,22 @@ It also installs the subagents `tw-status` (Haiku), `tw-ops` (Sonnet), and
 `tw-builder-t1` / `-t2` / `-t3` (Haiku / Sonnet / Opus). Agent frontmatter fixes
 one model per agent, so there is one builder per tier: `tw step show` prints
 `# builder: tw-builder-t2 (sonnet, step tier T2)` first, and `/tw-step` hands
-the step to that agent. `tw-builder` (Opus) stays as a fallback. Files you have
-edited are never overwritten; `tw init --templates` adds missing ones to an
-existing project.
+the step to that agent. `tw-builder` (Opus) stays as a fallback.
+
+Work that is not the open step (fixes, cleanups, one-offs) goes to
+`tw-task-t1` / `-t2` / `-t3` (Haiku / Sonnet / Opus). They follow the brief, not
+the ladder, and gate on the brief's checks plus the project's test command. A
+builder given such a brief says "not the open step: for other work use
+tw-task-tN" and stops. Which agent when: step -> `tw-builder-tN`, other work ->
+`tw-task-tN`, status -> `tw-status`, queueing -> `tw-ops`.
+
+Push policy is `agents.push: never|after_gate` in `tierwright.yaml` (default
+`never`). Builder and task agents are rendered from it when installed: `never`
+writes "do not push", `after_gate` writes "push the current branch after the
+gate passes". Files you have edited are never overwritten; `tw init --templates`
+adds missing ones to an existing project, and `tw init --templates --force`
+also rewrites the `tw-builder*` / `tw-task*` agents (use it after changing
+`agents.push`).
 
 ## `tw spend`: model calls and agents
 
@@ -383,7 +396,7 @@ A walk-through with no model calls is in `examples/hello/`.
 
 | Path | Committed | What |
 |---|---|---|
-| `tierwright.yaml` | yes | backend, budgets, tiers, role overrides, hooks, queue, contract dialect |
+| `tierwright.yaml` | yes | backend, budgets, tiers, role overrides, agents.push, hooks, queue, contract dialect |
 | `goal.yaml` | yes | the goal and its done bar |
 | `steps/` | yes | the step ladder |
 | `.tierwright/ledger.jsonl` | yes | every attempt and verdict |

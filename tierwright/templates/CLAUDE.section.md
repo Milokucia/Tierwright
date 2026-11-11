@@ -9,5 +9,5 @@ This project runs on Tierwright: code does routine work, agents do judgment, eve
 - **Read the do-not-repeat list** (`tw ledger dnr`) before proposing anything.
 - **Same failure diagnosed twice = a rule** (`tw rule add`), not a third diagnosis.
 - **Use mined tools first:** `tw tool` lists one-call replacements for command sequences agents repeat; `tw mine` finds new ones.
-- **Pick the cheapest agent:** `tw-status` (haiku) for questions, `tw-ops` (sonnet) to run things, the builder `tw step show` names (`tw-builder-t1/t2/t3`: haiku/sonnet/opus by step tier) to build a step.
+- **Pick the agent:** the open step -> the `tw-builder-tN` that `tw step show` names; any other work -> `tw-task-tN` (T1/T2/T3 = haiku/sonnet/opus, pick by difficulty); status -> `tw-status`; queueing -> `tw-ops`. Builders refuse work that is not the open step.
 - **Owner only:** money, secrets, deletes, push/publish/launch. Write them to `owner-queue.md`.

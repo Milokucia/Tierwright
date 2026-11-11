@@ -45,10 +45,30 @@ def _merge_settings(path: Path) -> bool:
     return True
 
 
-def templates(p: Project) -> list[str]:
+PUSH_TEXT = {"never": "do not push.",
+             "after_gate": "push the current branch after the gate passes (never force-push)."}
+
+
+def _push_policy(p: Project) -> str:
+    try:
+        return config.load(p)["agents"]["push"]
+    except config.ConfigError as e:
+        if "invalid" in str(e):
+            raise
+        return "never"
+
+
+def _owned(name: str) -> bool:
+    return name.startswith(("tw-builder", "tw-task"))
+
+
+def templates(p: Project, force_agents: bool = False) -> list[str]:
     """Install the role prompts, subagents and slash commands that are missing.
-    Existing files (possibly edited) are never overwritten."""
+    Existing files (possibly edited) are never overwritten, except that
+    force_agents rewrites the tw-builder* and tw-task* agents. Builder and task
+    agents are rendered from agents.push."""
     wrote = []
+    push = PUSH_TEXT[_push_policy(p)]
     p.ensure()
     for f in resources.files("tierwright").joinpath("templates/roles").iterdir():
         dst = p.roles / f.name
@@ -59,8 +79,8 @@ def templates(p: Project) -> list[str]:
     agents.mkdir(parents=True, exist_ok=True)
     for f in resources.files("tierwright").joinpath("templates/agents").iterdir():
         dst = agents / f.name
-        if not dst.exists():
-            dst.write_text(f.read_text())
+        if not dst.exists() or (force_agents and _owned(f.name)):
+            dst.write_text(f.read_text().replace("{{PUSH}}", push))
             wrote.append(f".claude/agents/{f.name}")
     cmds = p.root / ".claude" / "commands"
     cmds.mkdir(parents=True, exist_ok=True)

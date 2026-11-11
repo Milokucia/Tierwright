@@ -89,3 +89,34 @@ def test_init_appends_to_existing_claude_md(tmp_path):
 def test_init_requires_backend_when_not_interactive(tmp_path):
     with pytest.raises(config.ConfigError, match="--backend"):
         init.run(str(tmp_path), probe=False, interactive=False)
+
+
+def test_task_agents_installed_and_builders_route(proj):
+    d = proj.root / ".claude/agents"
+    for t, m in (("t1", "haiku"), ("t2", "sonnet"), ("t3", "opus")):
+        task = (d / f"tw-task-{t}.md").read_text()
+        assert f"model: {m}" in task and "NOT the open" in task
+        assert "Do not run `tw step show`" in task and "{{PUSH}}" not in task
+        assert f"use tw-task-{t}" in (d / f"tw-builder-{t}.md").read_text()
+    assert "tw-task-tN" in (proj.root / "CLAUDE.md").read_text()
+
+
+def test_push_policy_renders_templates(proj):
+    d = proj.root / ".claude/agents"
+    names = ["tw-builder", "tw-builder-t1", "tw-builder-t2", "tw-builder-t3",
+             "tw-task-t1", "tw-task-t2", "tw-task-t3"]
+    for n in names:
+        assert "do not push." in (d / f"{n}.md").read_text()
+    proj.config_path.write_text(proj.config_path.read_text().replace("push: never", "push: after_gate"))
+    assert init.templates(proj) == []                       # edited/installed files stay
+    init.templates(proj, force_agents=True)
+    for n in names:
+        t = (d / f"{n}.md").read_text()
+        assert "after the gate passes" in t and "do not push" not in t and "{{PUSH}}" not in t
+    assert "model: haiku" in (d / "tw-status.md").read_text()
+
+
+def test_bad_push_value_rejected(proj):
+    proj.config_path.write_text(proj.config_path.read_text().replace("push: never", "push: always"))
+    with pytest.raises(config.ConfigError, match="agents.push"):
+        config.load(proj)

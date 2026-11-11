@@ -64,6 +64,7 @@ DEFAULTS = {
     # `tw watch` alerts: Pushover credentials from these env vars, else KEY=VALUE lines in file.
     "notify": {"pushover": {"token_env": "PUSHOVER_TOKEN", "user_env": "PUSHOVER_USER",
                             "file": "~/.pushover"}},
+    "agents": {"push": "never"},   # never | after_gate: whether builder/task agents push
     "hooks": {"block_polling": True, "block_raw_logs": True, "protected_paths": []},
     # Contract dialect accepted by `tw submit` / `tw contract lint` (see contract.py).
     "contract": {"unknown": "auto", "kinds": [], "opts": {}, "flags": []},
@@ -106,6 +107,7 @@ DEFAULTS = {
     },
 }
 
+PUSH_POLICIES = ("never", "after_gate")
 QUEUE_BACKENDS = ("local", "ssh")
 QUEUE_EVENTS = ("start", "end", "stop", "pass", "fail", "skip")
 TRANSLATE = {"timeout": ("{hours}", "{minutes}", "{seconds}"), "after": ("{job}",)}
@@ -148,6 +150,8 @@ def validate(cfg: dict) -> list[str]:
             errs.append(f"roles.{name}.backend must be subscription or api")
         if rc.get("backend") and cfg.get("backend") != "both" and rc["backend"] != cfg.get("backend"):
             errs.append(f"roles.{name}.backend={rc['backend']} but backend is {cfg.get('backend')}")
+    if (cfg.get("agents") or {}).get("push") not in PUSH_POLICIES:
+        errs.append(f"agents.push must be one of {PUSH_POLICIES}, got {(cfg.get('agents') or {}).get('push')!r}")
     errs += _validate_contract(cfg.get("contract") or {})
     errs += _validate_queue(cfg.get("queue") or {})
     from . import tune
@@ -291,6 +295,8 @@ roles: {{}}
 
 limits: {{call_timeout_s: 900, escalate_after_failures: 2, job_timeout_s: 3600}}
 dispatch: {{auto_diagnose: true}}   # call the diagnose role when no rule matches a failure
+agents:
+  push: never             # never | after_gate: may builder/task agents push once the gate passes
 hooks:
   block_polling: true     # agents may not sleep/watch-loop on jobs
   block_raw_logs: true    # agents read `tw brief JOB`, not .tierwright/logs
