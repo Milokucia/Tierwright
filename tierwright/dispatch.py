@@ -23,6 +23,7 @@ measurable.
 
 from __future__ import annotations
 
+import json
 import shutil
 
 from . import brief as brief_mod
@@ -46,11 +47,26 @@ def _resubmit(p: Project, job: str) -> str | None:
     return f"{job}_r1"
 
 
+def _observed(p: Project, cfg: dict, job: str) -> bool:
+    q = cfg.get("queue") or {}
+    if q.get("backend") != "ssh" or not q.get("adopt_readonly"):
+        return False
+    f = p.q("remote") / f"{job.removesuffix('_r1')}.json"
+    try:
+        return bool(json.loads(f.read_text()).get("adopted"))
+    except (OSError, ValueError):
+        return False
+
+
 def handle(p: Project, cfg: dict, job: str) -> dict:
     b = brief_mod.build(p, job)
     v = rules.triage(b, rules.load(p))
     act, note = v["action"], v["note"]
     out = {"job": job, **v}
+    if _observed(p, cfg, job):      # the host's own dispatcher owns retries and repairs
+        ledger.record(p, "job", job, "ok" if act == "ok" else "same" if act == "ignore" else "fail",
+                      note=f"{v['class']} ({v['rule']}): observed only, host owns retries")
+        return {**out, "applied": "observed"}
     if act == "resubmit":
         new = _resubmit(p, job)
         if new:

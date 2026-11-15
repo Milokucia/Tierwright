@@ -300,3 +300,14 @@ def test_local_verifier_skips_foreign_forms(tmp_path):
     v = Verifier("#@ success s re='(\\d)' ref=0.5\n#@ forbid x re=N\n", str(tmp_path / "o"), 0,
                  ext={"opts": {"success": ["ref"]}})
     assert [c.kind for c in v.checks] == ["forbid"]
+
+
+def test_adopt_readonly_never_resubmits_a_hosts_own_job(proj, box):
+    cfg = use_ssh(proj, adopt=["dfp_*"], adopt_readonly=True)
+    remote.Remote(proj, cfg).pull()
+    (box / "gq/running/dfp_x.job").write_text("# MAX_H=1\nsleep 1\n")
+    ledger(box, "2026-11-15 10:00:00 GQ start dfp_x.job on GPU 0",
+           "2026-11-15 10:03:30 GQ CONTRACT SKIP dfp_x.job rc=-15: preempted for a waiting job")
+    out = pull(proj, cfg)
+    assert [(d["job"], d["applied"]) for d in out] == [("dfp_x", "observed")]
+    assert not list((box / "gq/pending").glob("*_r1.job"))

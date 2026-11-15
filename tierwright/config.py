@@ -102,6 +102,9 @@ DEFAULTS = {
         # job-name globs tracked without `tw submit` (jobs the host's own scripts queue):
         # null = the tune.jobs match patterns; [] = none
         "adopt": None,
+        # true: adopted jobs (the host's own scripts queued them) are only observed: verdicts and
+        # trends are recorded, but the dispatcher never resubmits, tunes or diagnoses them
+        "adopt_readonly": False,
         "log_dir": "~/gq/logs",
         "log_name": "{job}.job.log",
     },
@@ -221,6 +224,8 @@ def _validate_queue(q: dict) -> list[str]:
     ad = q.get("adopt")
     if ad is not None and (not isinstance(ad, list) or not all(isinstance(x, str) and x.strip() for x in ad)):
         errs.append("queue.adopt must be a list of job-name globs, or null")
+    if not isinstance(q.get("adopt_readonly"), bool):
+        errs.append("queue.adopt_readonly must be true or false")
     if q.get("log_dir") is not None and not isinstance(q["log_dir"], str):
         errs.append("queue.log_dir must be a path on the remote host or null")
     if not isinstance(q.get("log_name"), str) or "{job}" not in q["log_name"]:

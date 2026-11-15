@@ -270,6 +270,7 @@ queue:
     after: '# AFTER=~/gq/marks/{job}.ok'
   header_lines: 3               # the box reads headers from this many first lines
   adopt: ['dfp_*', 'imit*']     # also track jobs the box's own scripts queue (null: tune.jobs globs)
+  adopt_readonly: false         # true: adopted jobs are observed only, the dispatcher never resubmits/tunes/diagnoses them
   log_dir: ~/gq/logs            # running jobs' stdout, read for trends (null: ledger lines only)
   log_name: '{job}.job.log'
 ```
